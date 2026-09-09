@@ -73,6 +73,7 @@ ITEM_SORT_FIELDS = {
     "title": "title",
     "artist": "artist_name_guess",
     "mbid": "artist__mbid",
+    "attempted": "resolution_attempted_at",
     "notes": "resolution_note",
 }
 DEFAULT_ORDER = ("-published_at", "-id")

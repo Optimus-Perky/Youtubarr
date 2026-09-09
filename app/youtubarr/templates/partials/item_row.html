@@ -18,6 +18,7 @@
              placeholder="paste a MusicBrainz artist ID or URL"
              class="form-control form-control-sm font-monospace{% if mbid_error %} is-invalid{% endif %}" style="width: 100%;">
   </td>
+  <td class="small text-nowrap">{{ it.resolution_attempted_at|date:"Y-m-d H:i" }}</td>
   <td class="small">
       {% if mbid_error %}
         <span class="text-danger">{{ mbid_error }}</span>

@@ -497,6 +497,22 @@ def test_items_page_sorts_by_duration(client):
 
 
 @pytest.mark.django_db
+def test_items_page_sorts_by_last_attempt(client):
+    from django.utils import timezone
+    from datetime import timedelta
+
+    pl = Playlist.objects.create(playlist_id="PLsomethinglong1")
+    now = timezone.now()
+    TrackItem.objects.create(playlist=pl, video_id="v1", title="Recent", resolution_attempted_at=now)
+    TrackItem.objects.create(playlist=pl, video_id="v2", title="Older", resolution_attempted_at=now - timedelta(days=5))
+
+    resp = client.get(reverse("items"), {"sort": "attempted", "dir": "asc"})
+
+    titles = [it.title for it in resp.context["items"]]
+    assert titles == ["Older", "Recent"]
+
+
+@pytest.mark.django_db
 def test_unknown_sort_key_falls_back_to_default_instead_of_crashing(client):
     pl = Playlist.objects.create(playlist_id="PLsomethinglong1")
     TrackItem.objects.create(playlist=pl, video_id="v1", title="Track")
