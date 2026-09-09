@@ -410,9 +410,11 @@ def test_playlist_column_shows_the_friendly_title_not_the_raw_id(client):
     resp = client.get(reverse("items"))
 
     # The raw id still shows up as the filter dropdown's option value - the
-    # point is the *cell* shows the friendly name, not that the id vanishes
-    # from the page entirely.
-    assert b"<td class=\"small\">Car Music</td>" in resp.content
+    # point is the *cell* shows the friendly name as its text content, not
+    # that the id vanishes from the page entirely. Matching on the tag's
+    # text rather than the whole opening tag so this doesn't break every
+    # time the cell picks up another style/class attribute.
+    assert b">Car Music</td>" in resp.content
 
 
 @pytest.mark.django_db
