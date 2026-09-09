@@ -13,7 +13,7 @@ from django.utils import timezone
 from django.views.decorators.http import require_http_methods
 
 from .models import AppSettings, Artist, Playlist, Snapshot, TrackItem
-from .tasks import lookup_mb_artist_name, run_sync, sync_task
+from .tasks import lookup_mb_artist_name, resolve_mbids_for_items, resolve_selected, run_sync, sync_task
 from .utils import YouTubeAuthError, oauth_status
 
 logger = logging.getLogger(__name__)
@@ -56,11 +56,77 @@ def playlists_view(request):
     })
 
 
+# Maps a URL-safe sort key to the ORM field it actually orders by. Keeping
+# this as an allow-list, rather than passing ?sort= straight into order_by(),
+# stops a query string from ordering on an arbitrary/expensive field.
+ITEM_SORT_FIELDS = {
+    "bl": "blacklisted",
+    "playlist": "playlist__playlist_id",
+    "video": "video_id",
+    "title": "title",
+    "artist": "artist_name_guess",
+    "mbid": "artist__mbid",
+    "published": "published_at",
+}
+
+
 def items_view(request):
+    sort = request.GET.get("sort", "published")
+    if sort not in ITEM_SORT_FIELDS:
+        sort = "published"
+    direction = request.GET.get("dir", "desc" if sort == "published" else "asc")
+    if direction not in ("asc", "desc"):
+        direction = "asc"
+
+    order_field = ITEM_SORT_FIELDS[sort]
+    if direction == "desc":
+        order_field = f"-{order_field}"
+
     items = (TrackItem.objects
              .select_related("playlist", "artist")
-             .order_by("-published_at", "-id")[:500])
-    return render(request, "items.html", {"items": items})
+             .order_by(order_field, "-id")[:500])
+    return render(request, "items.html", {"items": items, "sort": sort, "dir": direction})
+
+
+# A selection is a deliberate, bounded action - unlike a full backlog resolve,
+# there's no reason it should ever be huge. Caps how far the inline fallback
+# will go when no Celery worker is up, so a big selection gets a clear error
+# instead of quietly risking gunicorn's request timeout.
+INLINE_MATCH_CAP = 50
+
+
+@require_http_methods(["POST"])
+def match_selected_view(request):
+    item_ids = [int(v) for v in request.POST.getlist("item_id") if v.isdigit()]
+    if not item_ids:
+        messages.error(request, "No tracks selected.")
+        return redirect("items")
+
+    if _worker_available():
+        resolve_selected.delay(item_ids)
+        messages.success(
+            request,
+            f"Matching {len(item_ids)} selected track(s) in the background — "
+            "reload this page in a bit to see the result.",
+        )
+        return redirect("items")
+
+    if len(item_ids) > INLINE_MATCH_CAP:
+        messages.error(
+            request,
+            f"No Celery worker is available, and {len(item_ids)} tracks is too many to "
+            f"match inline (limit {INLINE_MATCH_CAP}) without risking a timeout. Select "
+            "fewer, or try again once the worker is up.",
+        )
+        return redirect("items")
+
+    result = resolve_mbids_for_items(item_ids)
+    messages.success(
+        request,
+        f"Matched {result['resolved']} of {result['considered']} selected track(s); "
+        f"{result['unresolved']} still unresolved.",
+    )
+    return redirect("items")
 
 
 # --------------------------------------------------------------------------- #

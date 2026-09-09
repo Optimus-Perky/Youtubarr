@@ -1,4 +1,5 @@
 <tr id="row-{{ it.id }}">
+  <td><input type="checkbox" class="row-select" value="{{ it.id }}"></td>
   <td>
     <form
       hx-post="{% url 'toggle-blacklist' it.id %}"

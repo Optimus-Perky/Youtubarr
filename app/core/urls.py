@@ -8,6 +8,7 @@ urlpatterns = [
     path("", views.settings_view, name="settings"),
     path("playlists/", views.playlists_view, name="playlists"),
     path("items/", views.items_view, name="items"),
+    path("items/match-selected/", views.match_selected_view, name="match-selected"),
 
     # Sync
     path("playlists/sync/", views.sync_playlists_view, name="sync-playlists"),

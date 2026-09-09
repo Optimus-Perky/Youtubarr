@@ -374,6 +374,92 @@ def test_malformed_mbid_is_rejected_with_a_visible_error(client):
 
 
 # --------------------------------------------------------------------------- #
+# Items page: sorting and matching a selection
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.django_db
+def test_items_page_sorts_by_the_requested_column(client):
+    pl = Playlist.objects.create(playlist_id="PLsomethinglong1")
+    TrackItem.objects.create(playlist=pl, video_id="v1", title="Zebra")
+    TrackItem.objects.create(playlist=pl, video_id="v2", title="Apple")
+
+    resp = client.get(reverse("items"), {"sort": "title", "dir": "asc"})
+
+    titles = [it.title for it in resp.context["items"]]
+    assert titles == ["Apple", "Zebra"]
+
+
+@pytest.mark.django_db
+def test_unknown_sort_key_falls_back_to_default_instead_of_crashing(client):
+    pl = Playlist.objects.create(playlist_id="PLsomethinglong1")
+    TrackItem.objects.create(playlist=pl, video_id="v1", title="Track")
+
+    resp = client.get(reverse("items"), {"sort": "'; drop table--"})
+
+    assert resp.status_code == 200
+    assert resp.context["sort"] == "published"
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_matching_a_selection_only_touches_the_selected_rows(client, monkeypatch):
+    """No worker, small selection - runs inline and leaves everything else alone."""
+    monkeypatch.setattr("youtubarr.views._worker_available", lambda: False)
+    pl = Playlist.objects.create(playlist_id="PLsomethinglong1")
+    picked = TrackItem.objects.create(playlist=pl, video_id="v1", title="Sandstorm", artist_name_guess="Darude")
+    ignored = TrackItem.objects.create(playlist=pl, video_id="v2", title="Some Other Song", artist_name_guess="")
+    responses.add(responses.GET, MB, json={"artists": [{"id": "c8b03190-306c-4120-bb0b-6f2ebfc06ea9", "name": "Darude"}]})
+
+    client.post(reverse("match-selected"), {"item_id": [picked.id]})
+
+    picked.refresh_from_db()
+    ignored.refresh_from_db()
+    assert picked.artist.name == "Darude"
+    assert ignored.artist is None
+    assert ignored.resolution_attempted_at is None
+
+
+@pytest.mark.django_db
+def test_matching_with_nothing_selected_is_a_no_op(client):
+    resp = client.post(reverse("match-selected"), {})
+    assert resp.status_code == 302  # redirects back to items, doesn't 500
+
+
+@pytest.mark.django_db
+def test_large_selection_is_refused_inline_without_a_worker(client, monkeypatch):
+    monkeypatch.setattr("youtubarr.views._worker_available", lambda: False)
+    from youtubarr.views import INLINE_MATCH_CAP
+
+    pl = Playlist.objects.create(playlist_id="PLsomethinglong1")
+    ids = [
+        TrackItem.objects.create(playlist=pl, video_id=f"v{i}", title=f"Song {i}").id
+        for i in range(INLINE_MATCH_CAP + 1)
+    ]
+
+    client.post(reverse("match-selected"), {"item_id": ids})
+
+    # Nothing should have been attempted - refused up front, not partially run.
+    assert TrackItem.objects.filter(resolution_attempted_at__isnull=False).count() == 0
+
+
+@pytest.mark.django_db
+def test_matching_a_selection_prefers_the_background_worker(client, monkeypatch):
+    captured = {}
+    monkeypatch.setattr("youtubarr.views._worker_available", lambda: True)
+    monkeypatch.setattr(tasks.resolve_selected, "delay", lambda ids: captured.setdefault("ids", ids))
+
+    pl = Playlist.objects.create(playlist_id="PLsomethinglong1")
+    ti = TrackItem.objects.create(playlist=pl, video_id="v1", title="Track")
+
+    client.post(reverse("match-selected"), {"item_id": [ti.id]})
+
+    assert captured["ids"] == [ti.id]
+    # Dispatched to the worker, not run inline - nothing attempted synchronously.
+    ti.refresh_from_db()
+    assert ti.resolution_attempted_at is None
+
+
+# --------------------------------------------------------------------------- #
 # A sync outlives the page that started it
 # --------------------------------------------------------------------------- #
 

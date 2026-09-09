@@ -1,18 +1,28 @@
 {% extends "base.html" %}
 {% block content %}
   <h1 class="display-6 fw-semibold mb-3">Items (latest)</h1>
+
+  <form id="match-selected-form" method="post" action="{% url 'match-selected' %}">{% csrf_token %}</form>
+
+  <div class="d-flex align-items-center gap-2 mb-3">
+    <button type="button" class="btn btn-sm btn-outline-primary" id="match-selected-btn" disabled
+            onclick="submitSelected()">Match selected</button>
+    <span id="selected-count" class="text-muted small">0 selected</span>
+  </div>
+
   <div class="card">
     <div class="table-responsive">
       <table class="table table-hover align-middle mb-0">
         <thead class="table-light">
           <tr>
-            <th style="width:3rem;">BL</th>
-            <th>Playlist</th>
-            <th>Video</th>
-            <th>Title</th>
-            <th>Artist guess</th>
-            <th>MBID</th>
-            <th>Published</th>
+            <th style="width:2rem;"><input type="checkbox" id="select-all" onchange="toggleAll(this)"></th>
+            <th style="width:3rem;">{% include "partials/sort_header.html" with key="bl" label="BL" %}</th>
+            <th>{% include "partials/sort_header.html" with key="playlist" label="Playlist" %}</th>
+            <th>{% include "partials/sort_header.html" with key="video" label="Video" %}</th>
+            <th>{% include "partials/sort_header.html" with key="title" label="Title" %}</th>
+            <th>{% include "partials/sort_header.html" with key="artist" label="Artist guess" %}</th>
+            <th>{% include "partials/sort_header.html" with key="mbid" label="MBID" %}</th>
+            <th>{% include "partials/sort_header.html" with key="published" label="Published" %}</th>
             <th style="width:10rem;">Actions</th>
           </tr>
         </thead>
@@ -31,5 +41,34 @@
       // htmx already removes the row if hx-swap="outerHTML" w/ 204? No.
       // We'll rely on hx-target on the delete button instead (closest tr + swap:delete)
     });
+
+    function updateSelectedCount() {
+      const n = document.querySelectorAll('.row-select:checked').length;
+      document.getElementById('selected-count').textContent = n + ' selected';
+      document.getElementById('match-selected-btn').disabled = n === 0;
+    }
+
+    function toggleAll(cb) {
+      document.querySelectorAll('.row-select').forEach(el => { el.checked = cb.checked; });
+      updateSelectedCount();
+    }
+
+    document.getElementById('items-tbody').addEventListener('change', function(evt) {
+      if (evt.target.classList.contains('row-select')) updateSelectedCount();
+    });
+
+    function submitSelected() {
+      const form = document.getElementById('match-selected-form');
+      form.querySelectorAll('input[name="item_id"]').forEach(el => el.remove());
+
+      document.querySelectorAll('.row-select:checked').forEach(cb => {
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = 'item_id';
+        input.value = cb.value;
+        form.appendChild(input);
+      });
+      form.submit();
+    }
   </script>
 {% endblock %}

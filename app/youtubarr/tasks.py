@@ -349,9 +349,10 @@ def _link_artist(ti: TrackItem, name: str, mbid: str, note: str) -> None:
     ti.save(update_fields=["artist", "resolution_note", "resolution_attempted_at"])
 
 
-def resolve_mbids(progress=None, force=False) -> dict:
+def _resolve_items(items: list[TrackItem], progress=None) -> dict:
     """
-    Give every track an artist with a MusicBrainz ID, so Lidarr has something to act on.
+    The actual matching loop, shared by a full backlog pass and a hand-picked
+    selection from the Items page.
 
     Two routes, in order of trust:
       1. the artist name parsed out of the title/uploader, looked up directly
@@ -361,18 +362,6 @@ def resolve_mbids(progress=None, force=False) -> dict:
     the track gets permanently attached to - tracks simply stay unresolved and are
     retried later, with a note saying why they failed.
     """
-    pending = (
-        TrackItem.objects.filter(blacklisted=False)
-        .filter(Q(artist__isnull=True) | Q(artist__mbid__isnull=True) | Q(artist__mbid=""))
-        .order_by("id")
-    )
-    if not force:
-        cutoff = timezone.now() - timedelta(days=RESOLUTION_RETRY_DAYS)
-        pending = pending.filter(
-            Q(resolution_attempted_at__isnull=True) | Q(resolution_attempted_at__lt=cutoff)
-        )
-
-    items = list(pending)
     total = len(items)
     resolved = unresolved = 0
     by_name, by_title = {}, {}
@@ -411,6 +400,35 @@ def resolve_mbids(progress=None, force=False) -> dict:
             ti.save(update_fields=["resolution_note", "resolution_attempted_at"])
 
     return {"resolved": resolved, "unresolved": unresolved, "considered": total}
+
+
+def _pending_qs():
+    return (
+        TrackItem.objects.filter(blacklisted=False)
+        .filter(Q(artist__isnull=True) | Q(artist__mbid__isnull=True) | Q(artist__mbid=""))
+    )
+
+
+def resolve_mbids(progress=None, force=False) -> dict:
+    """Give every track an artist with a MusicBrainz ID, so Lidarr has something
+    to act on. See _resolve_items for how a single track is actually matched."""
+    pending = _pending_qs().order_by("id")
+    if not force:
+        cutoff = timezone.now() - timedelta(days=RESOLUTION_RETRY_DAYS)
+        pending = pending.filter(
+            Q(resolution_attempted_at__isnull=True) | Q(resolution_attempted_at__lt=cutoff)
+        )
+    return _resolve_items(list(pending), progress=progress)
+
+
+def resolve_mbids_for_items(item_ids, progress=None) -> dict:
+    """
+    Match only the tracks hand-picked on the Items page, regardless of
+    RESOLUTION_RETRY_DAYS - picking specific rows is itself the override.
+    Already-resolved tracks in the selection are left alone.
+    """
+    items = list(_pending_qs().filter(id__in=item_ids).order_by("id"))
+    return _resolve_items(items, progress=progress)
 
 
 def make_snapshot() -> int:
@@ -505,6 +523,13 @@ def refresh_playlists():
 @shared_task
 def resolve_missing_mbids(force=False):
     return resolve_mbids(force=force)
+
+
+@shared_task(bind=True)
+def resolve_selected(self, item_ids):
+    def progress(msg):
+        self.update_state(state="PROGRESS", meta={"message": msg})
+    return resolve_mbids_for_items(item_ids, progress=progress)
 
 
 @shared_task
