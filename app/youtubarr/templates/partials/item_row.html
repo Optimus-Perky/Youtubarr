@@ -7,7 +7,8 @@
     <form class="d-flex gap-2"
           hx-post="{% url 'edit-item' it.id %}"
           hx-target="#row-{{ it.id }}"
-          hx-swap="outerHTML">{% csrf_token %}
+          hx-swap="outerHTML"
+          hx-sync="closest tr:queue">{% csrf_token %}
       <input type="text" name="title" value="{{ it.title }}" class="form-control form-control-sm" style="width: 100%;">
   </td>
   <td>
@@ -37,6 +38,7 @@
       hx-post="{% url 'match-item' it.id %}"
       hx-target="#row-{{ it.id }}"
       hx-swap="outerHTML"
+      hx-sync="closest tr:queue"
       class="d-inline">{% csrf_token %}
       <button type="submit" class="btn btn-sm btn-outline-success">Match</button>
     </form>
@@ -45,6 +47,7 @@
       hx-post="{% url 'delete-item' it.id %}"
       hx-target="#row-{{ it.id }}"
       hx-swap="delete"
+      hx-sync="closest tr:queue"
       class="d-inline">{% csrf_token %}
       <button type="submit" class="btn btn-sm btn-outline-danger">Delete</button>
     </form>
