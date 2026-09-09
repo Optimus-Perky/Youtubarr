@@ -4,6 +4,7 @@ from urllib.parse import urlencode
 
 from django.conf import settings
 from django.contrib import messages
+from django.core.paginator import Paginator
 from django.db.models import Q
 from django.http import (
     HttpResponse,
@@ -81,12 +82,21 @@ DEFAULT_ORDER = ("-published_at", "-id")
 ITEM_FILTER_PARAMS = ["q_playlist", "q_title", "q_artist", "q_mbid", "q_notes"]
 
 
+# Rendering 500 rows in one page - each with several inputs and two forms -
+# made the DOM heavy enough that resizing the browser (which relayouts
+# everything currently visible, repeatedly, for the duration of the drag)
+# could visibly stall the page and, on modest hardware, the OS pointer along
+# with it. Paginating cuts what's in the DOM at once by roughly 10x.
+ITEMS_PAGE_SIZE = 50
+
+
 def _query_state(request):
     """
     Everything about the current Items view worth carrying across a redirect
-    or an action: the sort and every active filter. Centralised so a sort
-    link, the filter form, and "Match selected" all agree on what "here"
-    means instead of each reconstructing the query string by hand.
+    or an action: the sort, the page, and every active filter. Centralised so
+    a sort link, a page link, the filter form, and "Match selected" all agree
+    on what "here" means instead of each reconstructing the query string by
+    hand.
     """
     sort = request.GET.get("sort", "")
     if sort not in ITEM_SORT_FIELDS:
@@ -98,6 +108,7 @@ def _query_state(request):
     state = {"sort": sort, "dir": direction}
     for param in ITEM_FILTER_PARAMS:
         state[param] = request.GET.get(param, "").strip()
+    state["page"] = request.GET.get("page", "").strip()
     return state
 
 
@@ -130,18 +141,36 @@ def items_view(request):
         order = (f"-{order_field}" if direction == "desc" else order_field, "-id")
     else:
         order = DEFAULT_ORDER
-    items = qs.order_by(*order)[:500]
+    qs = qs.order_by(*order)
 
-    # The querystring with filters but no sort/dir - what a sort link needs
-    # to append to switch column without losing the active filters.
-    base_qs = urlencode({k: v for k, v in state.items() if v and k not in ("sort", "dir")})
+    paginator = Paginator(qs, ITEMS_PAGE_SIZE)
+    try:
+        page_number = int(state["page"] or 1)
+    except ValueError:
+        page_number = 1
+    page_obj = paginator.get_page(page_number)
+    # Reflect whatever page Paginator actually landed on (it clamps an
+    # out-of-range request rather than erroring) back into state, so links
+    # built below - and a "Match selected" redirect - point at the page the
+    # user is actually looking at.
+    state["page"] = str(page_obj.number)
+
+    # What a sort link needs to append: filters, but not sort/dir (it's
+    # setting those itself) and not page (changing sort should land on
+    # page 1, same as changing a filter does).
+    base_qs = urlencode({k: v for k, v in state.items() if v and k not in ("sort", "dir", "page")})
+    # What a page link needs to append: sort, dir and filters, but not page
+    # (it's setting that itself).
+    nav_qs = urlencode({k: v for k, v in state.items() if v and k != "page"})
 
     return render(request, "items.html", {
-        "items": items,
+        "items": page_obj,
+        "page_obj": page_obj,
         "sort": sort,
         "dir": direction,
         "filters": state,
         "base_qs": base_qs,
+        "nav_qs": nav_qs,
         "current_qs": urlencode({k: v for k, v in state.items() if v}),
         "playlists": Playlist.objects.all().order_by("title", "playlist_id"),
     })

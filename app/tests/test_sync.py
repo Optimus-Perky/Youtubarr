@@ -531,6 +531,37 @@ def test_matching_a_selection_preserves_the_current_sort(client, monkeypatch):
     assert resp.url == f"{reverse('items')}?sort=mbid&dir=asc"
 
 
+@pytest.mark.django_db
+def test_items_page_paginates_instead_of_dumping_everything_at_once(client):
+    """A flat cap of 500 rows in one page made the DOM heavy enough to stall
+    the browser on resize; pagination keeps any single page small."""
+    from youtubarr.views import ITEMS_PAGE_SIZE
+
+    pl = Playlist.objects.create(playlist_id="PLsomethinglong1")
+    for i in range(ITEMS_PAGE_SIZE + 10):
+        TrackItem.objects.create(playlist=pl, video_id=f"v{i}", title=f"Track {i}")
+
+    page1 = client.get(reverse("items"))
+    page2 = client.get(reverse("items"), {"page": 2})
+
+    assert len(page1.context["items"]) == ITEMS_PAGE_SIZE
+    assert len(page2.context["items"]) == 10
+    assert page1.context["page_obj"].paginator.count == ITEMS_PAGE_SIZE + 10
+
+
+@pytest.mark.django_db
+def test_matching_a_selection_preserves_the_current_page(client, monkeypatch):
+    monkeypatch.setattr("youtubarr.views._worker_available", lambda: True)
+    monkeypatch.setattr(tasks.resolve_selected, "delay", lambda ids: None)
+
+    pl = Playlist.objects.create(playlist_id="PLsomethinglong1")
+    ti = TrackItem.objects.create(playlist=pl, video_id="v1", title="Track")
+
+    resp = client.post(f"{reverse('match-selected')}?page=3", {"item_id": [ti.id]})
+
+    assert resp.url == f"{reverse('items')}?dir=asc&page=3"
+
+
 # --------------------------------------------------------------------------- #
 # A sync outlives the page that started it
 # --------------------------------------------------------------------------- #
