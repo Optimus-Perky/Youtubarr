@@ -484,11 +484,17 @@ def resolve_mbids(progress=None, force=False) -> dict:
 
 def resolve_mbids_for_items(item_ids, progress=None) -> dict:
     """
-    Match only the tracks hand-picked on the Items page, regardless of
-    RESOLUTION_RETRY_DAYS - picking specific rows is itself the override.
-    Already-resolved tracks in the selection are left alone.
+    Force-match the tracks hand-picked on the Items page - regardless of
+    RESOLUTION_RETRY_DAYS, and regardless of whether a row already has an
+    artist. Picking specific rows and clicking "Match selected" is itself
+    the override: unlike the backlog pass, this doesn't skip already-linked
+    tracks, so it doubles as a way to re-run a match you suspect is wrong.
+    A re-run that doesn't find anything conclusive leaves the existing link
+    alone (see _resolve_items) rather than clearing it.
     """
-    items = list(_pending_qs().filter(id__in=item_ids).order_by("id"))
+    items = list(
+        TrackItem.objects.filter(blacklisted=False, id__in=item_ids).order_by("id")
+    )
     return _resolve_items(items, progress=progress)
 
 

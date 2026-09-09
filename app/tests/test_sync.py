@@ -599,6 +599,31 @@ def test_matching_a_selection_only_touches_the_selected_rows(client, monkeypatch
 
 
 @pytest.mark.django_db
+@responses.activate
+def test_matching_a_selection_rechecks_an_already_resolved_row(client, monkeypatch):
+    """Regression: resolve_mbids_for_items used to only consider still-
+    unresolved tracks, so selecting a wrongly-matched row and clicking
+    Match Selected silently did nothing - there was no way to force a
+    re-check on a row that already had (a wrong) artist."""
+    from youtubarr.models import Artist
+
+    monkeypatch.setattr("youtubarr.views._worker_available", lambda: False)
+    pl = Playlist.objects.create(playlist_id="PLsomethinglong1")
+    wrong = Artist.objects.create(name="Jesus Jones", mbid="f9776598-2689-41db-98d3-829f5510021c")
+    ti = TrackItem.objects.create(
+        playlist=pl, video_id="v1", title="Right Here, Right Now",
+        artist_name_guess="Fatboy Slim", artist=wrong, resolution_note="manually set",
+    )
+    responses.add(responses.GET, MB,
+                   json={"artists": [{"id": "34c63966-445c-4613-afe1-4f0e1e53ae9a", "name": "Fatboy Slim"}]})
+
+    client.post(reverse("match-selected"), {"item_id": [ti.id]})
+
+    ti.refresh_from_db()
+    assert ti.artist.name == "Fatboy Slim"
+
+
+@pytest.mark.django_db
 def test_matching_with_nothing_selected_is_a_no_op(client):
     resp = client.post(reverse("match-selected"), {})
     assert resp.status_code == 302  # redirects back to items, doesn't 500
