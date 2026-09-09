@@ -340,12 +340,34 @@ def test_manually_entering_an_mbid_resolves_the_track(client):
 
 
 @pytest.mark.django_db
-def test_malformed_mbid_is_rejected_not_saved(client):
+@responses.activate
+def test_pasting_a_musicbrainz_url_extracts_the_mbid(client):
+    """Copying from musicbrainz.org gives you the artist page URL, not the
+    bare UUID - that has to work too, not just a hand-typed ID."""
+    pl = Playlist.objects.create(playlist_id="PLsomethinglong1")
+    ti = TrackItem.objects.create(playlist=pl, video_id="v1", title="Children", artist_name_guess="")
+    mbid = "561d854a-6a28-4aa7-8c99-323e6ce46c2a"
+    responses.add(responses.GET, f"{MB}{mbid}", json={"name": "Robert Miles"})
+
+    resp = client.post(reverse("edit-item", args=[ti.id]),
+                        {"title": ti.title, "mbid": f"https://musicbrainz.org/artist/{mbid}"})
+
+    assert resp.status_code == 200
+    ti.refresh_from_db()
+    assert ti.artist.mbid == mbid
+
+
+@pytest.mark.django_db
+def test_malformed_mbid_is_rejected_with_a_visible_error(client):
     pl = Playlist.objects.create(playlist_id="PLsomethinglong1")
     ti = TrackItem.objects.create(playlist=pl, video_id="v1", title="Children", artist_name_guess="")
 
-    client.post(reverse("edit-item", args=[ti.id]), {"title": ti.title, "mbid": "not-a-real-mbid"})
+    resp = client.post(reverse("edit-item", args=[ti.id]), {"title": ti.title, "mbid": "not-a-real-mbid"})
 
+    # The response IS the swapped row (HTMX partial) - Django's messages
+    # framework has nowhere to render in that swap, so the error has to be
+    # in this HTML or it's invisible to whoever just typed it.
+    assert b"doesn" in resp.content and b"look like a MusicBrainz" in resp.content
     ti.refresh_from_db()
     assert ti.artist is None
     assert ti.manually_edited is False

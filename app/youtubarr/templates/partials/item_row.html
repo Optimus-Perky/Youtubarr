@@ -22,9 +22,11 @@
   </td>
   <td class="small">
       <input type="text" name="mbid" value="{{ it.artist.mbid|default:'' }}"
-             placeholder="paste a MusicBrainz artist ID"
-             class="form-control form-control-sm font-monospace" style="max-width: 16rem;">
-      {% if not it.artist.mbid %}
+             placeholder="paste a MusicBrainz artist ID or URL"
+             class="form-control form-control-sm font-monospace{% if mbid_error %} is-invalid{% endif %}" style="max-width: 16rem;">
+      {% if mbid_error %}
+        <div class="text-danger" style="font-size:.75rem;">{{ mbid_error }}</div>
+      {% elif not it.artist.mbid %}
         <div class="text-warning" style="font-size:.75rem;" title="{{ it.resolution_note }}">unresolved</div>
         {% if it.resolution_note %}<div class="text-muted" style="font-size:.75rem;">{{ it.resolution_note|truncatechars:70 }}</div>{% endif %}
       {% endif %}

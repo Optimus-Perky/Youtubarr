@@ -18,7 +18,10 @@ from .utils import YouTubeAuthError, oauth_status
 
 logger = logging.getLogger(__name__)
 
-MBID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+# Not anchored: a MusicBrainz artist page URL (the natural thing to paste,
+# e.g. https://musicbrainz.org/artist/561d854a-...) carries the UUID as a
+# substring rather than the whole field, so this pulls it out of either form.
+MBID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
 
 def settings_view(request):
@@ -247,9 +250,9 @@ def add_liked_music(request):
 # HTMX item helpers
 # --------------------------------------------------------------------------- #
 
-def item_row(request, item_id):
+def item_row(request, item_id, mbid_error=None):
     it = get_object_or_404(TrackItem.objects.select_related("playlist", "artist"), id=item_id)
-    return render(request, "partials/item_row.html", {"it": it})
+    return render(request, "partials/item_row.html", {"it": it, "mbid_error": mbid_error})
 
 
 @require_http_methods(["POST"])
@@ -301,12 +304,18 @@ def edit_item(request, item_id):
         it.artist_name_guess = artist_guess
         changed.append("artist_name_guess")
 
+    mbid_error = None
     current_mbid = it.artist.mbid if it.artist else ""
     if mbid and mbid != current_mbid:
-        if not MBID_RE.match(mbid):
-            messages.error(request, "That doesn't look like a MusicBrainz artist ID (expected a UUID).")
+        match = MBID_RE.search(mbid)
+        if not match:
+            # This is an HTMX partial swap of just the row - Django's messages
+            # framework has nowhere to render, so the error has to travel back
+            # in the row itself or it's invisible and the save just looks like
+            # it silently did nothing.
+            mbid_error = "That doesn't look like a MusicBrainz artist ID (paste the ID or its musicbrainz.org artist page URL)."
         else:
-            _set_artist_by_mbid(it, mbid)
+            _set_artist_by_mbid(it, match.group(0).lower())
             changed += ["artist", "resolution_note", "resolution_attempted_at"]
 
     if changed:
@@ -315,7 +324,7 @@ def edit_item(request, item_id):
         it.manually_edited = True
         changed.append("manually_edited")
         it.save(update_fields=changed)
-    return item_row(request, item_id)
+    return item_row(request, item_id, mbid_error=mbid_error)
 
 
 @require_http_methods(["POST"])
