@@ -639,6 +639,39 @@ def test_matching_a_selection_rechecks_an_already_resolved_row(client, monkeypat
 
 
 @pytest.mark.django_db
+@responses.activate
+def test_per_row_match_button_force_rechecks_just_that_row(client):
+    """The per-row "Match" button next to Save/Delete - same force-recheck
+    behaviour as Match Selected, but for one row via HTMX instead of a
+    checkbox selection."""
+    from youtubarr.models import Artist
+
+    pl = Playlist.objects.create(playlist_id="PLsomethinglong1")
+    wrong = Artist.objects.create(name="Jesus Jones", mbid="f9776598-2689-41db-98d3-829f5510021c")
+    picked = TrackItem.objects.create(
+        playlist=pl, video_id="v1", title="Right Here, Right Now",
+        artist_name_guess="", artist=wrong,
+    )
+    other = TrackItem.objects.create(playlist=pl, video_id="v2", title="Some Other Song")
+    fatboy_credit = {"artist-credit": [{"artist": {"id": "34c63966-445c-4613-afe1-4f0e1e53ae9a", "name": "Fatboy Slim"}}]}
+    responses.add(responses.GET, MB_RECORDING, json={"recordings": [
+        {"title": "Right Here, Right Now", **fatboy_credit},
+        {"title": "Right Here, Right Now", **fatboy_credit},
+    ]})
+
+    resp = client.post(reverse("match-item", args=[picked.id]))
+
+    assert resp.status_code == 200
+    picked.refresh_from_db()
+    other.refresh_from_db()
+    assert picked.artist.name == "Fatboy Slim"
+    assert picked.artist_name_guess == "Fatboy Slim"
+    # Only the row that was actually clicked gets touched.
+    assert other.artist is None
+    assert other.resolution_attempted_at is None
+
+
+@pytest.mark.django_db
 def test_matching_with_nothing_selected_is_a_no_op(client):
     resp = client.post(reverse("match-selected"), {})
     assert resp.status_code == 302  # redirects back to items, doesn't 500

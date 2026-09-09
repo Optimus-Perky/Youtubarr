@@ -501,6 +501,21 @@ def edit_item(request, item_id):
 
 
 @require_http_methods(["POST"])
+def match_item(request, item_id):
+    """
+    The per-row equivalent of selecting just this track and clicking "Match
+    selected" - forces a fresh check regardless of current state or
+    RESOLUTION_RETRY_DAYS (see resolve_mbids_for_items), but swapped in
+    place like Save/Delete instead of redirecting the whole page, since a
+    single track is always fast enough to run inline.
+    """
+    it = get_object_or_404(TrackItem, id=item_id)
+    resolve_mbids_for_items([it.id])
+    it.refresh_from_db()
+    return item_row(request, item_id)
+
+
+@require_http_methods(["POST"])
 def delete_item(request, item_id):
     it = get_object_or_404(TrackItem, id=item_id)
     it.delete()

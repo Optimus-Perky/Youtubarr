@@ -34,6 +34,14 @@
     </form>
 
     <form
+      hx-post="{% url 'match-item' it.id %}"
+      hx-target="#row-{{ it.id }}"
+      hx-swap="outerHTML"
+      class="d-inline">{% csrf_token %}
+      <button type="submit" class="btn btn-sm btn-outline-success">Match</button>
+    </form>
+
+    <form
       hx-post="{% url 'delete-item' it.id %}"
       hx-target="#row-{{ it.id }}"
       hx-swap="delete"
