@@ -3,12 +3,20 @@
   <div class="alert {% if r.errors %}alert-warning{% else %}alert-success{% endif %}">
     <div class="fw-semibold mb-2">
       {% if r.errors %}Sync finished with problems{% else %}Sync complete{% endif %}
+      {% if historic %}<span class="fw-normal small text-muted">- last run{% if finished_at %} {{ finished_at }}{% endif %}</span>{% endif %}
     </div>
     <div class="small mb-2">
       {{ r.items }} track{{ r.items|pluralize }} seen ·
       {{ r.artists_resolved }} new artist{{ r.artists_resolved|pluralize }} matched on MusicBrainz ·
       {{ r.snapshot_artists }} artist{{ r.snapshot_artists|pluralize }} now published to Lidarr
     </div>
+    {% if r.unresolved %}
+      <div class="small mb-2">
+        <strong>{{ r.unresolved }}</strong> track{{ r.unresolved|pluralize }} could not be matched to an artist
+        and were left out rather than guessed at.
+        <a href="/items/">Review them on the Items page</a> - each one says why.
+      </div>
+    {% endif %}
     {% if r.playlists %}
       <ul class="small mb-0 ps-3">
         {% for p in r.playlists %}
@@ -24,11 +32,13 @@
     {% endif %}
   </div>
   {% endwith %}
+  {% if not historic %}
   <!-- refresh the table now that data has changed -->
   <div hx-get="{% url 'playlist-table' %}"
        hx-trigger="load"
        hx-target="#playlist-table"
        hx-swap="outerHTML"></div>
+  {% endif %}
 
 {% elif state == "FAILURE" %}
   <div class="alert alert-danger">

@@ -1,19 +1,24 @@
 import logging
 import time
+from datetime import timedelta
 
 import requests
 from celery import shared_task
 from dateutil import parser as dateparser
 from django.conf import settings
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from .models import AppSettings, Artist, Playlist, Snapshot, TrackItem
 from .utils import (
     YouTubeAuthError,
+    clean_track_title,
     fetch_liked_music,
     get_oauth_bearer,
     guess_artist_from_title,
+    is_placeholder_title,
+    normalize_title,
 )
 
 logger = logging.getLogger(__name__)
@@ -21,6 +26,15 @@ logger = logging.getLogger(__name__)
 YT_API_ITEMS = "https://www.googleapis.com/youtube/v3/playlistItems"
 YT_API_PLAYLISTS = "https://www.googleapis.com/youtube/v3/playlists"
 MB_API = "https://musicbrainz.org/ws/2/artist/"
+MB_RECORDING_API = "https://musicbrainz.org/ws/2/recording/"
+
+# How long before we re-ask MusicBrainz about a track we could not identify.
+RESOLUTION_RETRY_DAYS = 30
+
+# A recording-title search is only trusted when this share of the exact-title
+# candidates agree on the same artist, over at least this many candidates.
+MB_MIN_CONSENSUS_SHARE = 0.6
+MB_MIN_CONSENSUS_VOTES = 2
 MB_HEADERS = {"User-Agent": settings.MB_USER_AGENT}
 
 
@@ -107,6 +121,40 @@ def _upsert_liked_music(playlist: Playlist) -> int:
     return count
 
 
+def _refresh_existing_item(ti: TrackItem, title: str, channel: str, position: int) -> None:
+    """
+    Bring an existing row up to date with what YouTube now returns.
+
+    The original code only ever updated ``position``, so rows created while the
+    sync was unauthenticated kept their placeholder "Private video" titles forever
+    and could never be identified. Anything the user has edited by hand is left alone.
+    """
+    changed = []
+    if ti.position != position:
+        ti.position = position
+        changed.append("position")
+
+    if not ti.manually_edited:
+        # Don't trade a real title for a placeholder, but do replace a placeholder.
+        if title and title != ti.title and not (is_placeholder_title(title) and not is_placeholder_title(ti.title)):
+            ti.title = title
+            changed.append("title")
+        if channel and channel != ti.channel_title:
+            ti.channel_title = channel
+            changed.append("channel_title")
+        if "title" in changed or "channel_title" in changed:
+            guess = guess_artist_from_title(ti.title, ti.channel_title)
+            if guess != ti.artist_name_guess:
+                ti.artist_name_guess = guess
+                changed.append("artist_name_guess")
+            # Metadata moved, so any previous verdict is stale - allow a retry.
+            ti.resolution_attempted_at = None
+            changed.append("resolution_attempted_at")
+
+    if changed:
+        ti.save(update_fields=changed)
+
+
 def fetch_playlist_items(playlist: Playlist) -> int:
     """
     Sync one playlist. Returns the number of items seen.
@@ -167,9 +215,11 @@ def fetch_playlist_items(playlist: Playlist) -> int:
             if not vd:
                 continue
             title = sn.get("title", "")
-            ch = sn.get("channelTitle", "")
+            # channelTitle here is the PLAYLIST owner (i.e. you). The uploader,
+            # which is what might name the artist, is videoOwnerChannelTitle.
+            ch = sn.get("videoOwnerChannelTitle") or ""
             published = sn.get("publishedAt")
-            artist_guess = guess_artist_from_title(title, ch)
+            position = sn.get("position", 0)
 
             with transaction.atomic():
                 ti, created = TrackItem.objects.get_or_create(
@@ -178,15 +228,13 @@ def fetch_playlist_items(playlist: Playlist) -> int:
                     defaults=dict(
                         title=title,
                         channel_title=ch,
-                        position=sn.get("position", 0),
+                        position=position,
                         published_at=dateparser.parse(published) if published else None,
-                        artist_name_guess=artist_guess,
+                        artist_name_guess=guess_artist_from_title(title, ch),
                     ),
                 )
                 if not created:
-                    # only update "machine" fields that should always be current
-                    ti.position = sn.get("position", ti.position)
-                    ti.save(update_fields=["position"])
+                    _refresh_existing_item(ti, title, ch, position)
             count += 1
 
         token = data.get("nextPageToken")
@@ -215,36 +263,140 @@ def search_mb_artist_mbid(name: str) -> str | None:
     return None
 
 
-def resolve_mbids(progress=None) -> int:
-    """Resolve MusicBrainz IDs for artists we haven't looked up yet."""
-    names = list(
-        TrackItem.objects
-        .filter(blacklisted=False, artist__isnull=True)
-        .exclude(artist_name_guess="")
-        .values_list("artist_name_guess", flat=True)
-        .distinct()
-    )
-    total = len(names)
-    resolved = 0
-    for i, name in enumerate(names, 1):
-        if progress:
-            progress(f"Looking up artist {i} of {total} on MusicBrainz")
-        mbid = search_mb_artist_mbid(name)
-        time.sleep(1.05)  # MusicBrainz asks for max 1 request/second
-        art, _ = Artist.objects.get_or_create(name=name)
-        if mbid and not art.mbid:
-            art.mbid = mbid
-            art.save(update_fields=["mbid"])
-            resolved += 1
 
-    # Link TrackItems that now have an Artist row
-    for ti in TrackItem.objects.filter(artist__isnull=True).exclude(artist_name_guess=""):
-        try:
-            ti.artist = Artist.objects.get(name=ti.artist_name_guess)
-            ti.save(update_fields=["artist"])
-        except Artist.DoesNotExist:
-            pass
-    return resolved
+def search_mb_artist_by_recording(title: str):
+    """
+    Identify an artist from a song title alone, by asking MusicBrainz for the
+    recording and seeing whether its candidates agree.
+
+    Many tracks (personal uploads especially) carry no artist anywhere in their
+    YouTube metadata, so the title is all we have. A plain title search is not
+    trustworthy on its own - "Children" returns eight unrelated artists - so we
+    keep only candidates whose title matches exactly and require most of them to
+    name the same artist. Duration is deliberately NOT used: uploads are usually
+    edits or remasters whose length does not match the MusicBrainz recording.
+
+    Returns (name, mbid, note). name/mbid are None when nothing is trustworthy;
+    note always explains the outcome.
+    """
+    cleaned = clean_track_title(title)
+    target = normalize_title(cleaned)
+    if not target:
+        return None, None, "no usable title"
+
+    params = {"query": f'recording:"{cleaned}"', "fmt": "json", "limit": 25}
+    try:
+        r = requests.get(MB_RECORDING_API, params=params, headers=MB_HEADERS, timeout=30)
+    except requests.RequestException as exc:
+        return None, None, f"MusicBrainz unreachable: {exc}"
+    if r.status_code != 200:
+        return None, None, f"MusicBrainz returned HTTP {r.status_code}"
+
+    recordings = r.json().get("recordings") or []
+    exact = [rec for rec in recordings if normalize_title(rec.get("title") or "") == target]
+    if not exact:
+        return None, None, f"no exact title match ({len(recordings)} candidates)"
+
+    votes = {}
+    for rec in exact:
+        credit = (rec.get("artist-credit") or [{}])[0].get("artist") or {}
+        mbid, name = credit.get("id"), credit.get("name")
+        if not mbid:
+            continue
+        entry = votes.setdefault(mbid, {"name": name, "count": 0})
+        entry["count"] += 1
+
+    if not votes:
+        return None, None, "candidates had no artist credit"
+
+    total = sum(v["count"] for v in votes.values())
+    best_mbid, best = max(votes.items(), key=lambda kv: kv[1]["count"])
+    share = best["count"] / total
+
+    if best["count"] < MB_MIN_CONSENSUS_VOTES or share < MB_MIN_CONSENSUS_SHARE:
+        others = len(votes)
+        return None, None, (
+            f"ambiguous: {others} artists for this title, "
+            f"best is {best['name']} with only {best['count']}/{total}"
+        )
+
+    return best["name"], best_mbid, f"MusicBrainz recording consensus {best['count']}/{total}"
+
+
+def _link_artist(ti: TrackItem, name: str, mbid: str, note: str) -> None:
+    artist, _ = Artist.objects.get_or_create(name=name)
+    if mbid and artist.mbid != mbid:
+        artist.mbid = mbid
+        artist.resolved_from = note
+        artist.save(update_fields=["mbid", "resolved_from"])
+    ti.artist = artist
+    ti.resolution_note = note
+    ti.resolution_attempted_at = timezone.now()
+    ti.save(update_fields=["artist", "resolution_note", "resolution_attempted_at"])
+
+
+def resolve_mbids(progress=None, force=False) -> dict:
+    """
+    Give every track an artist with a MusicBrainz ID, so Lidarr has something to act on.
+
+    Two routes, in order of trust:
+      1. the artist name parsed out of the title/uploader, looked up directly
+      2. failing that, the song title resolved by recording-search consensus
+
+    Unlike the original, a failed lookup no longer creates an empty Artist row that
+    the track gets permanently attached to - tracks simply stay unresolved and are
+    retried later, with a note saying why they failed.
+    """
+    pending = (
+        TrackItem.objects.filter(blacklisted=False)
+        .filter(Q(artist__isnull=True) | Q(artist__mbid__isnull=True) | Q(artist__mbid=""))
+        .order_by("id")
+    )
+    if not force:
+        cutoff = timezone.now() - timedelta(days=RESOLUTION_RETRY_DAYS)
+        pending = pending.filter(
+            Q(resolution_attempted_at__isnull=True) | Q(resolution_attempted_at__lt=cutoff)
+        )
+
+    items = list(pending)
+    total = len(items)
+    resolved = unresolved = 0
+    by_name, by_title = {}, {}
+
+    for i, ti in enumerate(items, 1):
+        if progress and (i == 1 or i % 25 == 0 or i == total):
+            progress(f"Identifying artists: {i} of {total}")
+
+        name = mbid = None
+        note = ""
+
+        # 1) we think we know the artist's name already
+        guess = (ti.artist_name_guess or "").strip()
+        if guess:
+            if guess not in by_name:
+                by_name[guess] = search_mb_artist_mbid(guess)
+                time.sleep(1.05)  # MusicBrainz asks for max 1 request/second
+            if by_name[guess]:
+                name, mbid, note = guess, by_name[guess], "MusicBrainz artist search"
+
+        # 2) otherwise ask what recording this title is
+        if not mbid and ti.title and not is_placeholder_title(ti.title):
+            key = normalize_title(clean_track_title(ti.title))
+            if key not in by_title:
+                by_title[key] = search_mb_artist_by_recording(ti.title)
+                time.sleep(1.05)
+            name, mbid, note = by_title[key]
+
+        if mbid and name:
+            _link_artist(ti, name, mbid, note)
+            resolved += 1
+        else:
+            unresolved += 1
+            ti.resolution_note = note or "could not identify an artist"
+            ti.resolution_attempted_at = timezone.now()
+            ti.save(update_fields=["resolution_note", "resolution_attempted_at"])
+
+    return {"resolved": resolved, "unresolved": unresolved, "considered": total}
 
 
 def make_snapshot() -> int:
@@ -309,7 +461,9 @@ def run_sync(playlist_ids=None, progress=None) -> dict:
 
     if progress:
         progress("Resolving artists on MusicBrainz")
-    summary["artists_resolved"] = resolve_mbids(progress=progress)
+    stats = resolve_mbids(progress=progress)
+    summary["artists_resolved"] = stats["resolved"]
+    summary["unresolved"] = stats["unresolved"]
 
     if progress:
         progress("Building Lidarr snapshot")
@@ -335,8 +489,8 @@ def refresh_playlists():
 
 
 @shared_task
-def resolve_missing_mbids():
-    return resolve_mbids()
+def resolve_missing_mbids(force=False):
+    return resolve_mbids(force=force)
 
 
 @shared_task

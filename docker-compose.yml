@@ -2,12 +2,26 @@ services:
   youtubarr:
     build: .
     env_file: .env
-    ports:
-      - "8000:80"
+    # Shares the passthroughvpn container's network stack, so all outbound
+    # YouTube/MusicBrainz traffic leaves through the VPN.
+    #
+    # Two consequences, both deliberate:
+    #   * there is no "ports:" section - Docker forbids publishing ports in
+    #     container network mode. Publish the web port on passthroughvpn itself.
+    #   * redis is reached on 127.0.0.1, not by service name, because both
+    #     containers share one localhost. CELERY_BROKER_URL in .env must match.
+    #
+    # passthroughvpn must already be running, or these fail to start with
+    # "cannot join network of a non running container". If you restart the VPN
+    # container, restart these two afterwards.
+    network_mode: "container:passthroughvpn"
     volumes:
       - ./data:/data
     depends_on:
       - redis
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
+    network_mode: "container:passthroughvpn"
+    restart: unless-stopped

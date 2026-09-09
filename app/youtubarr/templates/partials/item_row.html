@@ -3,7 +3,7 @@
     <form
       hx-post="{% url 'toggle-blacklist' it.id %}"
       hx-target="#row-{{ it.id }}"
-      hx-swap="outerHTML">
+      hx-swap="outerHTML">{% csrf_token %}
       <input type="checkbox" name="blacklisted" {% if it.blacklisted %}checked{% endif %}
              onchange="this.form.requestSubmit()">
     </form>
@@ -14,13 +14,20 @@
     <form class="d-flex gap-2"
           hx-post="{% url 'edit-item' it.id %}"
           hx-target="#row-{{ it.id }}"
-          hx-swap="outerHTML">
+          hx-swap="outerHTML">{% csrf_token %}
       <input type="text" name="title" value="{{ it.title }}" class="form-control form-control-sm" style="max-width: 22rem;">
   </td>
   <td>
       <input type="text" name="artist_name_guess" value="{{ it.artist_name_guess }}" class="form-control form-control-sm" style="max-width: 14rem;">
   </td>
-  <td class="small">{{ it.artist.mbid|default:"–" }}</td>
+  <td class="small">
+    {% if it.artist.mbid %}
+      <span class="font-monospace">{{ it.artist.mbid }}</span>
+    {% else %}
+      <span class="text-warning" title="{{ it.resolution_note }}">unresolved</span>
+      {% if it.resolution_note %}<div class="text-muted" style="font-size:.75rem;">{{ it.resolution_note|truncatechars:70 }}</div>{% endif %}
+    {% endif %}
+  </td>
   <td class="small text-nowrap">{{ it.published_at|date:"Y-m-d H:i" }}</td>
   <td class="text-nowrap">
       <button class="btn btn-sm btn-primary">Save</button>
@@ -30,7 +37,7 @@
       hx-post="{% url 'delete-item' it.id %}"
       hx-target="#row-{{ it.id }}"
       hx-swap="delete"
-      class="d-inline">
+      class="d-inline">{% csrf_token %}
       <button type="submit" class="btn btn-sm btn-outline-danger">Delete</button>
     </form>
   </td>

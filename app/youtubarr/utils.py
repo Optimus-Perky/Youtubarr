@@ -16,6 +16,51 @@ class YouTubeAuthError(RuntimeError):
     """Raised when OAuth is not usable. Message is safe to show in the UI."""
 
 
+# Titles YouTube returns when it will not show us the real one.
+PLACEHOLDER_TITLES = {"private video", "deleted video", "[private video]", "[deleted video]"}
+
+# Bracketed junk that shows up in upload titles: "(Official Video)", "[HQ]", etc.
+# Deliberately narrow, so a meaningful bracket like "9PM (Till I Come)" survives.
+_NOISE_BRACKET = re.compile(
+    r"\s*[\(\[][^\)\]]*\b(official|video|audio|lyrics?|hd|hq|4k|mv|visuali[sz]er|"
+    r"full\s+album|music\s+video|remaster(ed)?)\b[^\)\]]*[\)\]]",
+    re.IGNORECASE,
+)
+
+# Apostrophes and quotes are deleted outright so "Lola's Theme" folds onto
+# "Lolas Theme"; other punctuation becomes a space.
+_QUOTES = re.compile("['`\u2018\u2019\u201c\u201d" + chr(34) + "]+")
+_PUNCT = re.compile("[,.!?/\\\\_:;-]+")
+_BRACKETS = re.compile(r"[\(\)\[\]{}]")
+
+
+def is_placeholder_title(title: str) -> bool:
+    """True for YouTube's stand-in titles like 'Private video'."""
+    return (title or "").strip().lower() in PLACEHOLDER_TITLES
+
+
+def clean_track_title(title: str) -> str:
+    """Strip upload noise from a video title before searching for it."""
+    t = _NOISE_BRACKET.sub("", title or "")
+    t = re.sub(r"\s*[-\u2013]\s*Topic\s*$", "", t, flags=re.IGNORECASE)
+    return t.strip()
+
+
+def normalize_title(title: str) -> str:
+    """
+    Fold a title to a comparable form.
+
+    'Lola\u2019s Theme', "Lola's Theme" and 'Lolas Theme' all become 'lolas theme',
+    and '9PM (Till I Come)' becomes '9pm till i come'. Used to insist on an exact
+    title match before trusting a MusicBrainz result.
+    """
+    t = (title or "").lower().replace("&", " and ")
+    t = _QUOTES.sub("", t)
+    t = _PUNCT.sub(" ", t)
+    t = _BRACKETS.sub(" ", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
 def guess_artist_from_title(title: str, channel_title: str) -> str:
     """
     Heuristics:

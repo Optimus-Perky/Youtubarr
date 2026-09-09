@@ -32,8 +32,11 @@
   </div>
 {% endif %}
 
-<!-- Sync feedback lands here -->
-<div id="sync-status" class="mb-3"></div>
+<!-- Sync feedback lands here. Populated on load when a sync is already
+     running (or recently finished), then updated in place by htmx. -->
+<div id="sync-status" class="mb-3">
+  {% if sync %}{% include "partials/sync_status.html" with state=sync.state result=sync.result task_id=sync.task_id message=sync.message historic=sync.historic finished_at=sync.finished_at %}{% endif %}
+</div>
 
 <form method="post" class="row g-3 mb-4">{% csrf_token %}
   <div class="col-auto">

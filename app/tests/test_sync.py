@@ -211,3 +211,175 @@ def test_successful_sync_does_update_last_synced(client, settings, _inline):
     client.post(reverse("sync-playlist", args=[pl.pk]), headers={"hx-request": "true"})
     pl.refresh_from_db()
     assert pl.last_synced is not None
+
+
+# --------------------------------------------------------------------------- #
+# Metadata refresh: rows created by earlier, unauthenticated syncs
+# --------------------------------------------------------------------------- #
+
+def _yt_item(title, owner, vid="vid1", pos=0):
+    return {"snippet": {"title": title, "videoOwnerChannelTitle": owner,
+                        "channelTitle": "Mark",  # playlist owner - must NOT be used
+                        "publishedAt": "2024-01-01T00:00:00Z", "position": pos,
+                        "resourceId": {"videoId": vid}}}
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_stale_private_video_rows_are_refreshed(client, settings, _inline):
+    """
+    The original code only ever updated `position` for existing rows, so tracks
+    stored as 'Private video' by an unauthenticated sync stayed that way forever.
+    """
+    settings.YOUTUBE_API_KEY = "TESTKEY"
+    pl = Playlist.objects.create(playlist_id="PLsomethinglong1")
+    stale = TrackItem.objects.create(playlist=pl, video_id="vid1", title="Private video",
+                                     channel_title="Mark", artist_name_guess="", position=0)
+
+    responses.add(responses.GET, YT_PL,
+                  json={"items": [{"snippet": {"title": "Old School 1", "channelTitle": "Mark"}}]}, status=200)
+    responses.add(responses.GET, YT_ITEMS,
+                  json={"items": [_yt_item("Pjanoo", "Music Library Uploads", "vid1", 3)]}, status=200)
+    responses.add(responses.GET, MB, json={"recordings": []}, status=200)
+
+    client.post(reverse("sync-playlist", args=[pl.pk]), headers={"hx-request": "true"})
+
+    stale.refresh_from_db()
+    assert stale.title == "Pjanoo", "placeholder title must be replaced once we can see the real one"
+    assert stale.channel_title == "Music Library Uploads"
+    assert stale.position == 3
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_uses_video_owner_not_playlist_owner(client, settings, _inline):
+    """channelTitle is the playlist's owner; the '- Topic' heuristic needs the uploader."""
+    settings.YOUTUBE_API_KEY = "TESTKEY"
+    pl = Playlist.objects.create(playlist_id="PLsomethinglong1")
+    responses.add(responses.GET, YT_PL, json={"items": []}, status=200)
+    responses.add(responses.GET, YT_ITEMS,
+                  json={"items": [_yt_item("Teardrop", "Massive Attack - Topic", "vidA")]}, status=200)
+    responses.add(responses.GET, MB, json={"artists": [{"id": "mb-0000"}]}, status=200)
+
+    client.post(reverse("sync-playlist", args=[pl.pk]), headers={"hx-request": "true"})
+
+    ti = TrackItem.objects.get(video_id="vidA")
+    assert ti.channel_title == "Massive Attack - Topic"
+    assert ti.artist_name_guess == "Massive Attack", "Topic channel should name the artist"
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_hand_edited_rows_are_not_overwritten(client, settings, _inline):
+    settings.YOUTUBE_API_KEY = "TESTKEY"
+    pl = Playlist.objects.create(playlist_id="PLsomethinglong1")
+    edited = TrackItem.objects.create(playlist=pl, video_id="vid1", title="Robert Miles - Children",
+                                      artist_name_guess="Robert Miles", manually_edited=True)
+
+    responses.add(responses.GET, YT_PL, json={"items": []}, status=200)
+    responses.add(responses.GET, YT_ITEMS,
+                  json={"items": [_yt_item("Children", "Music Library Uploads", "vid1", 7)]}, status=200)
+    responses.add(responses.GET, MB, json={"artists": [{"id": "mb-1111"}]}, status=200)
+
+    client.post(reverse("sync-playlist", args=[pl.pk]), headers={"hx-request": "true"})
+
+    edited.refresh_from_db()
+    assert edited.title == "Robert Miles - Children", "a manual correction must survive a sync"
+    assert edited.artist_name_guess == "Robert Miles"
+    assert edited.position == 7, "but machine fields still update"
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_real_title_is_not_replaced_by_a_placeholder(client, settings, _inline):
+    """If a video later becomes private, keep the good title we already have."""
+    settings.YOUTUBE_API_KEY = "TESTKEY"
+    pl = Playlist.objects.create(playlist_id="PLsomethinglong1")
+    good = TrackItem.objects.create(playlist=pl, video_id="vid1", title="Pjanoo",
+                                    channel_title="Music Library Uploads")
+
+    responses.add(responses.GET, YT_PL, json={"items": []}, status=200)
+    responses.add(responses.GET, YT_ITEMS,
+                  json={"items": [_yt_item("Private video", "", "vid1")]}, status=200)
+    responses.add(responses.GET, MB, json={"recordings": []}, status=200)
+
+    client.post(reverse("sync-playlist", args=[pl.pk]), headers={"hx-request": "true"})
+
+    good.refresh_from_db()
+    assert good.title == "Pjanoo"
+
+
+@pytest.mark.django_db
+def test_editing_an_item_marks_it_as_hand_edited(client):
+    pl = Playlist.objects.create(playlist_id="PLsomethinglong1")
+    ti = TrackItem.objects.create(playlist=pl, video_id="v1", title="Children", artist_name_guess="")
+
+    client.post(reverse("edit-item", args=[ti.id]),
+                {"title": "Children", "artist_name_guess": "Robert Miles"})
+
+    ti.refresh_from_db()
+    assert ti.artist_name_guess == "Robert Miles"
+    assert ti.manually_edited is True
+
+
+# --------------------------------------------------------------------------- #
+# A sync outlives the page that started it
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.django_db
+def test_running_sync_is_reattached_after_navigating_away(client, monkeypatch):
+    """Leaving the page and coming back must find the sync still in progress."""
+    from youtubarr.models import AppSettings
+
+    class FakeResult:
+        id = "task-abc-123"
+    monkeypatch.setattr(tasks.sync_task, "delay", lambda *a, **k: FakeResult())
+    monkeypatch.setattr("youtubarr.views._worker_available", lambda: True)
+
+    client.post(reverse("sync-playlists"), headers={"hx-request": "true"})
+    assert AppSettings.load().sync_task_id == "task-abc-123"
+
+    # ...user wanders off to Items and comes back
+    page = client.get(reverse("playlists")).content.decode()
+    assert reverse("sync-status", args=["task-abc-123"]) in page
+    assert "Sync in progress" in page
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_finished_sync_result_survives_a_reload(client, settings, _inline):
+    """Otherwise a sync that finishes while you're elsewhere is invisible."""
+    from youtubarr.models import AppSettings
+
+    settings.YOUTUBE_API_KEY = "TESTKEY"
+    Playlist.objects.create(playlist_id="PLsomethinglong1")
+    responses.add(responses.GET, YT_PL, json={"items": []}, status=200)
+    responses.add(responses.GET, YT_ITEMS, json={"items": []}, status=200)
+
+    client.post(reverse("sync-playlists"), headers={"hx-request": "true"})
+
+    s = AppSettings.load()
+    assert s.sync_task_id == ""
+    assert s.last_sync_summary is not None
+
+    page = client.get(reverse("playlists")).content.decode()
+    assert "last run" in page
+
+
+@pytest.mark.django_db
+def test_polling_to_completion_clears_the_running_task(client, monkeypatch):
+    from youtubarr.models import AppSettings
+
+    s = AppSettings.load()
+    s.sync_task_id = "task-abc-123"
+    s.save()
+
+    class Done:
+        state = "SUCCESS"
+        result = {"items": 5, "playlists": [], "errors": [],
+                  "artists_resolved": 2, "snapshot_artists": 2, "unresolved": 0}
+    monkeypatch.setattr("celery.result.AsyncResult", lambda *a, **k: Done())
+
+    body = client.get(reverse("sync-status", args=["task-abc-123"])).content.decode()
+    assert "Sync complete" in body
+    assert AppSettings.load().sync_task_id == "", "a finished task must stop being polled"

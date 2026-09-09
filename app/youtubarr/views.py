@@ -8,6 +8,7 @@ from django.http import (
     JsonResponse,
 )
 from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone
 from django.views.decorators.http import require_http_methods
 
 from .models import AppSettings, Playlist, Snapshot, TrackItem
@@ -45,6 +46,7 @@ def playlists_view(request):
     return render(request, "playlists.html", {
         "playlists": _playlists_qs(),
         "oauth": oauth_status(),
+        "sync": _sync_panel_context(),
     })
 
 
@@ -58,6 +60,38 @@ def items_view(request):
 # --------------------------------------------------------------------------- #
 # Sync
 # --------------------------------------------------------------------------- #
+
+def _sync_panel_context():
+    """
+    What to show in the sync panel on a fresh page load.
+
+    A sync outlives the page that started it, so reattach to one still running,
+    and otherwise show the result of the last one - without this you lose the
+    outcome entirely by navigating away mid-sync.
+    """
+    s = AppSettings.load()
+    if s.sync_task_id:
+        return {"task_id": s.sync_task_id, "state": "PENDING",
+                "message": "Sync in progress\u2026"}
+    if s.last_sync_summary:
+        return {"state": "SUCCESS", "result": s.last_sync_summary,
+                "finished_at": s.last_sync_finished_at, "historic": True}
+    return None
+
+
+def _remember_task(task_id):
+    s = AppSettings.load()
+    s.sync_task_id = task_id or ""
+    s.save(update_fields=["sync_task_id"])
+
+
+def _remember_result(result):
+    s = AppSettings.load()
+    s.sync_task_id = ""
+    s.last_sync_summary = result
+    s.last_sync_finished_at = timezone.now()
+    s.save(update_fields=["sync_task_id", "last_sync_summary", "last_sync_finished_at"])
+
 
 def _playlists_qs():
     return Playlist.objects.all().order_by("-last_synced", "playlist_id")
@@ -99,6 +133,7 @@ def _start_sync(request, playlist_ids=None, label="All playlists"):
     if worker:
         try:
             async_result = sync_task.delay(playlist_ids)
+            _remember_task(async_result.id)
             if is_htmx:
                 return render(request, "partials/sync_status.html", {
                     "task_id": async_result.id,
@@ -123,6 +158,7 @@ def _start_sync(request, playlist_ids=None, label="All playlists"):
         messages.error(request, f"Sync failed: {exc}")
         return redirect("playlists")
 
+    _remember_result(result)
     if is_htmx:
         return render(request, "partials/sync_status.html", {
             "state": "SUCCESS", "result": result, "inline": True, "label": label,
@@ -168,8 +204,10 @@ def sync_status_view(request, task_id):
             ctx["message"] = (res.info or {}).get("message", "Working…")
         elif state == "SUCCESS":
             ctx["result"] = res.result
+            _remember_result(res.result)
         elif state == "FAILURE":
             ctx["error"] = str(res.result)
+            _remember_task(None)
         else:
             ctx["message"] = "Waiting for a worker to pick this up…"
     except Exception as exc:
@@ -235,6 +273,10 @@ def edit_item(request, item_id):
         it.artist_name_guess = artist_guess
         changed.append("artist_name_guess")
     if changed:
+        # Remember this was corrected by hand so a later sync does not
+        # overwrite it with YouTube's own metadata.
+        it.manually_edited = True
+        changed.append("manually_edited")
         it.save(update_fields=changed)
     return item_row(request, item_id)
 

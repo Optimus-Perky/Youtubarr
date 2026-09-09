@@ -8,6 +8,12 @@ class AppSettings(models.Model):
     created = models.DateTimeField(auto_now_add=True)
     updated = models.DateTimeField(auto_now=True)
 
+    # A sync runs in the Celery worker, not in the browser, so the page needs to
+    # be able to find it again after a reload or navigating away.
+    sync_task_id = models.CharField(max_length=64, blank=True, default="")
+    last_sync_summary = models.JSONField(null=True, blank=True)
+    last_sync_finished_at = models.DateTimeField(null=True, blank=True)
+
     def save(self, *args, **kwargs):
         self.pk = 1  # enforce single row
         super().save(*args, **kwargs)
@@ -34,6 +40,8 @@ class Playlist(models.Model):
 class Artist(models.Model):
     name = models.CharField(max_length=255, unique=True)
     mbid = models.CharField(max_length=36, blank=True, null=True)  # UUID
+    # How this artist was identified, e.g. "musicbrainz recording consensus 8/8".
+    resolved_from = models.CharField(max_length=200, blank=True, default="")
 
     def __str__(self):
         return f"{self.name} [{self.mbid or 'no-mbid'}]"
@@ -48,6 +56,16 @@ class TrackItem(models.Model):
     blacklisted = models.BooleanField(default=False)
     published_at = models.DateTimeField(null=True, blank=True)
     position = models.IntegerField(default=0)
+
+    # Set when a human edits the title/artist in the UI. Syncs then leave those
+    # fields alone instead of overwriting the correction with YouTube's metadata.
+    manually_edited = models.BooleanField(default=False)
+
+    # Why the last artist lookup did or didn't produce a match, and when it ran.
+    # Lets the UI explain unresolved tracks, and stops us re-querying MusicBrainz
+    # for the same hopeless title on every single sync.
+    resolution_note = models.CharField(max_length=255, blank=True, default="")
+    resolution_attempted_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         unique_together = ("playlist", "video_id")
