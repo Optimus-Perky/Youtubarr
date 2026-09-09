@@ -55,17 +55,37 @@
 
   <div class="card">
     <div class="table-responsive">
-      <table class="table table-hover align-middle mb-0">
+      <!--
+        table-layout: fixed - Bootstrap's default (auto) sizes every column by
+        measuring the actual rendered content of every cell, which the browser
+        redoes on every resize event while a window is being dragged. That
+        measurement is CPU-only text layout work with no GPU path, and with
+        50 rows x 8 columns of real content it was heavy enough to visibly
+        stall the page (and, on modest hardware, the OS pointer) mid-resize.
+        Fixed layout sizes columns from the colgroup below once, so resizing
+        never re-measures cell content at all.
+      -->
+      <table class="table table-hover align-middle mb-0" style="table-layout: fixed; width: 100%;">
+        <colgroup>
+          <col style="width: 2rem;">
+          <col style="width: 12rem;">
+          <col style="width: 8rem;">
+          <col style="width: 22rem;">
+          <col style="width: 15rem;">
+          <col style="width: 24rem;">
+          <col style="width: 16rem;">
+          <col style="width: 10rem;">
+        </colgroup>
         <thead class="table-light">
           <tr>
-            <th style="width:2rem;"><input type="checkbox" id="select-all" onchange="toggleAll(this)"></th>
+            <th><input type="checkbox" id="select-all" onchange="toggleAll(this)"></th>
             <th>{% include "partials/sort_header.html" with key="playlist" label="Playlist" %}</th>
             <th>{% include "partials/sort_header.html" with key="video" label="Video" %}</th>
             <th>{% include "partials/sort_header.html" with key="title" label="Title" %}</th>
             <th>{% include "partials/sort_header.html" with key="artist" label="Artist guess" %}</th>
             <th>{% include "partials/sort_header.html" with key="mbid" label="MBID" %}</th>
             <th>{% include "partials/sort_header.html" with key="notes" label="Notes" %}</th>
-            <th style="width:10rem;">Actions</th>
+            <th>Actions</th>
           </tr>
         </thead>
         <tbody id="items-tbody">
