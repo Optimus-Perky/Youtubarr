@@ -1,7 +1,7 @@
 <tr id="row-{{ it.id }}">
   <td><input type="checkbox" class="row-select" value="{{ it.id }}"></td>
   <td class="small text-truncate" title="{{ it.playlist.title|default:it.playlist.playlist_id }}">{{ it.playlist.title|default:it.playlist.playlist_id }}</td>
-  <td class="text-truncate"><a href="https://youtu.be/{{ it.video_id }}" target="_blank"> {{ it.video_id }} </a></td>
+  <td class="text-truncate"><a href="https://music.youtube.com/watch?v={{ it.video_id }}" target="_blank"> {{ it.video_id }} </a></td>
   <td>
     <form class="d-flex gap-2"
           hx-post="{% url 'edit-item' it.id %}"
