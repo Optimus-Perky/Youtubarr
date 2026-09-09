@@ -2,8 +2,50 @@
 {% block content %}
   <h1 class="display-6 fw-semibold mb-3">Items (latest)</h1>
 
+  <form method="get" action="{% url 'items' %}" class="row g-2 align-items-end mb-3">
+    <input type="hidden" name="sort" value="{{ sort }}">
+    <input type="hidden" name="dir" value="{{ dir }}">
+    <div class="col-auto">
+      <label class="form-label small mb-0">Playlist</label>
+      <select name="q_playlist" class="form-select form-select-sm" onchange="this.form.submit()">
+        <option value="">All playlists</option>
+        {% for pl in playlists %}
+          <option value="{{ pl.playlist_id }}" {% if filters.q_playlist == pl.playlist_id %}selected{% endif %}>
+            {{ pl.title|default:pl.playlist_id }}
+          </option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-auto">
+      <label class="form-label small mb-0">Title contains</label>
+      <input type="text" name="q_title" value="{{ filters.q_title }}" class="form-control form-control-sm" style="width: 14rem;">
+    </div>
+    <div class="col-auto">
+      <label class="form-label small mb-0">Artist contains</label>
+      <input type="text" name="q_artist" value="{{ filters.q_artist }}" class="form-control form-control-sm" style="width: 12rem;">
+    </div>
+    <div class="col-auto">
+      <label class="form-label small mb-0">MBID</label>
+      <select name="q_mbid" class="form-select form-select-sm" onchange="this.form.submit()">
+        <option value="">All</option>
+        <option value="resolved" {% if filters.q_mbid == "resolved" %}selected{% endif %}>Resolved</option>
+        <option value="unresolved" {% if filters.q_mbid == "unresolved" %}selected{% endif %}>Unresolved</option>
+      </select>
+    </div>
+    <div class="col-auto">
+      <label class="form-label small mb-0">Notes contains</label>
+      <input type="text" name="q_notes" value="{{ filters.q_notes }}" class="form-control form-control-sm" style="width: 14rem;">
+    </div>
+    <div class="col-auto">
+      <button type="submit" class="btn btn-sm btn-outline-secondary">Filter</button>
+      {% if filters.q_playlist or filters.q_title or filters.q_artist or filters.q_mbid or filters.q_notes %}
+        <a href="?sort={{ sort }}&dir={{ dir }}" class="btn btn-sm btn-link">Clear filters</a>
+      {% endif %}
+    </div>
+  </form>
+
   <form id="match-selected-form" method="post"
-        action="{% url 'match-selected' %}?sort={{ sort }}&dir={{ dir }}">{% csrf_token %}</form>
+        action="{% url 'match-selected' %}{% if current_qs %}?{{ current_qs }}{% endif %}">{% csrf_token %}</form>
 
   <div class="d-flex align-items-center gap-2 mb-3">
     <button type="button" class="btn btn-sm btn-outline-primary" id="match-selected-btn" disabled
@@ -17,13 +59,12 @@
         <thead class="table-light">
           <tr>
             <th style="width:2rem;"><input type="checkbox" id="select-all" onchange="toggleAll(this)"></th>
-            <th style="width:3rem;">{% include "partials/sort_header.html" with key="bl" label="BL" %}</th>
             <th>{% include "partials/sort_header.html" with key="playlist" label="Playlist" %}</th>
             <th>{% include "partials/sort_header.html" with key="video" label="Video" %}</th>
             <th>{% include "partials/sort_header.html" with key="title" label="Title" %}</th>
             <th>{% include "partials/sort_header.html" with key="artist" label="Artist guess" %}</th>
             <th>{% include "partials/sort_header.html" with key="mbid" label="MBID" %}</th>
-            <th>{% include "partials/sort_header.html" with key="published" label="Published" %}</th>
+            <th>{% include "partials/sort_header.html" with key="notes" label="Notes" %}</th>
             <th style="width:10rem;">Actions</th>
           </tr>
         </thead>

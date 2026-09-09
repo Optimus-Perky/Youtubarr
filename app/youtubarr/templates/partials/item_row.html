@@ -1,38 +1,32 @@
 <tr id="row-{{ it.id }}">
   <td><input type="checkbox" class="row-select" value="{{ it.id }}"></td>
-  <td>
-    <form
-      hx-post="{% url 'toggle-blacklist' it.id %}"
-      hx-target="#row-{{ it.id }}"
-      hx-swap="outerHTML">{% csrf_token %}
-      <input type="checkbox" name="blacklisted" {% if it.blacklisted %}checked{% endif %}
-             onchange="this.form.requestSubmit()">
-    </form>
-  </td>
-  <td class="text-monospace small">{{ it.playlist.playlist_id }}</td>
+  <td class="small">{{ it.playlist.title|default:it.playlist.playlist_id }}</td>
   <td><a href="https://youtu.be/{{ it.video_id }}" target="_blank"> {{ it.video_id }} </a></td>
   <td>
     <form class="d-flex gap-2"
           hx-post="{% url 'edit-item' it.id %}"
           hx-target="#row-{{ it.id }}"
           hx-swap="outerHTML">{% csrf_token %}
-      <input type="text" name="title" value="{{ it.title }}" class="form-control form-control-sm" style="max-width: 22rem;">
+      <input type="text" name="title" value="{{ it.title }}" class="form-control form-control-sm" style="min-width: 26rem;">
   </td>
   <td>
-      <input type="text" name="artist_name_guess" value="{{ it.artist_name_guess }}" class="form-control form-control-sm" style="max-width: 14rem;">
+      <input type="text" name="artist_name_guess" value="{{ it.artist_name_guess }}" class="form-control form-control-sm" style="min-width: 18rem;">
   </td>
   <td class="small">
       <input type="text" name="mbid" value="{{ it.artist.mbid|default:'' }}"
              placeholder="paste a MusicBrainz artist ID or URL"
              class="form-control form-control-sm font-monospace{% if mbid_error %} is-invalid{% endif %}" style="max-width: 16rem;">
+  </td>
+  <td class="small">
       {% if mbid_error %}
-        <div class="text-danger" style="font-size:.75rem;">{{ mbid_error }}</div>
+        <span class="text-danger">{{ mbid_error }}</span>
       {% elif not it.artist.mbid %}
-        <div class="text-warning" style="font-size:.75rem;" title="{{ it.resolution_note }}">unresolved</div>
-        {% if it.resolution_note %}<div class="text-muted" style="font-size:.75rem;">{{ it.resolution_note|truncatechars:70 }}</div>{% endif %}
+        <span class="text-warning">unresolved</span>
+        {% if it.resolution_note %}<div class="text-muted" style="font-size:.75rem;">{{ it.resolution_note|truncatechars:90 }}</div>{% endif %}
+      {% elif it.resolution_note %}
+        <span class="text-muted" style="font-size:.75rem;">{{ it.resolution_note|truncatechars:90 }}</span>
       {% endif %}
   </td>
-  <td class="small text-nowrap">{{ it.published_at|date:"Y-m-d H:i" }}</td>
   <td class="text-nowrap">
       <button class="btn btn-sm btn-primary">Save</button>
     </form>

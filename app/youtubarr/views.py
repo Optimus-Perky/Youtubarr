@@ -1,8 +1,10 @@
 import logging
 import re
+from urllib.parse import urlencode
 
 from django.conf import settings
 from django.contrib import messages
+from django.db.models import Q
 from django.http import (
     HttpResponse,
     HttpResponseForbidden,
@@ -59,45 +61,90 @@ def playlists_view(request):
 
 # Maps a URL-safe sort key to the ORM field it actually orders by. Keeping
 # this as an allow-list, rather than passing ?sort= straight into order_by(),
-# stops a query string from ordering on an arbitrary/expensive field.
+# stops a query string from ordering on an arbitrary/expensive field. Columns
+# with no UI presence (blacklisted, published_at) aren't listed - there's no
+# header to click for them, so they'd only be reachable by hand-editing the
+# URL, and the natural fallback order below already covers "newest first".
 ITEM_SORT_FIELDS = {
-    "bl": "blacklisted",
-    "playlist": "playlist__playlist_id",
+    "playlist": "playlist__title",
     "video": "video_id",
     "title": "title",
     "artist": "artist_name_guess",
     "mbid": "artist__mbid",
-    "published": "published_at",
+    "notes": "resolution_note",
 }
+DEFAULT_ORDER = ("-published_at", "-id")
+
+# Query params a filter can appear under. Each maps to a lookup applied in
+# items_view; kept as an explicit list (rather than trusting request.GET
+# wholesale) so a stray query param can't be mistaken for a filter.
+ITEM_FILTER_PARAMS = ["q_playlist", "q_title", "q_artist", "q_mbid", "q_notes"]
 
 
-def _sort_params(request):
-    """Validate ?sort=/&dir= against the allow-list, so callers never have to
-    trust the query string directly."""
-    sort = request.GET.get("sort", "published")
+def _query_state(request):
+    """
+    Everything about the current Items view worth carrying across a redirect
+    or an action: the sort and every active filter. Centralised so a sort
+    link, the filter form, and "Match selected" all agree on what "here"
+    means instead of each reconstructing the query string by hand.
+    """
+    sort = request.GET.get("sort", "")
     if sort not in ITEM_SORT_FIELDS:
-        sort = "published"
-    direction = request.GET.get("dir", "desc" if sort == "published" else "asc")
+        sort = ""
+    direction = request.GET.get("dir", "asc")
     if direction not in ("asc", "desc"):
         direction = "asc"
-    return sort, direction
+
+    state = {"sort": sort, "dir": direction}
+    for param in ITEM_FILTER_PARAMS:
+        state[param] = request.GET.get(param, "").strip()
+    return state
 
 
-def _items_url(sort, direction):
-    return f"{reverse('items')}?sort={sort}&dir={direction}"
+def _items_url(state):
+    qs = urlencode({k: v for k, v in state.items() if v})
+    url = reverse("items")
+    return f"{url}?{qs}" if qs else url
 
 
 def items_view(request):
-    sort, direction = _sort_params(request)
+    state = _query_state(request)
+    sort, direction = state["sort"], state["dir"]
 
-    order_field = ITEM_SORT_FIELDS[sort]
-    if direction == "desc":
-        order_field = f"-{order_field}"
+    qs = TrackItem.objects.select_related("playlist", "artist")
+    if state["q_playlist"]:
+        qs = qs.filter(playlist__playlist_id=state["q_playlist"])
+    if state["q_title"]:
+        qs = qs.filter(title__icontains=state["q_title"])
+    if state["q_artist"]:
+        qs = qs.filter(artist_name_guess__icontains=state["q_artist"])
+    if state["q_mbid"] == "resolved":
+        qs = qs.filter(artist__mbid__isnull=False).exclude(artist__mbid="")
+    elif state["q_mbid"] == "unresolved":
+        qs = qs.filter(Q(artist__isnull=True) | Q(artist__mbid__isnull=True) | Q(artist__mbid=""))
+    if state["q_notes"]:
+        qs = qs.filter(resolution_note__icontains=state["q_notes"])
 
-    items = (TrackItem.objects
-             .select_related("playlist", "artist")
-             .order_by(order_field, "-id")[:500])
-    return render(request, "items.html", {"items": items, "sort": sort, "dir": direction})
+    if sort:
+        order_field = ITEM_SORT_FIELDS[sort]
+        order = (f"-{order_field}" if direction == "desc" else order_field, "-id")
+    else:
+        order = DEFAULT_ORDER
+    items = qs.order_by(*order)[:500]
+
+    # The querystring with filters but no sort/dir - what a sort link needs
+    # to append to switch column without losing the active filters.
+    base_qs = urlencode({k: v for k, v in state.items() if v and k not in ("sort", "dir")})
+
+    return render(request, "items.html", {
+        "items": items,
+        "sort": sort,
+        "dir": direction,
+        "filters": state,
+        "base_qs": base_qs,
+        "current_qs": urlencode({k: v for k, v in state.items() if v}),
+        "playlists": Playlist.objects.all().order_by("title", "playlist_id"),
+    })
 
 
 # A selection is a deliberate, bounded action - unlike a full backlog resolve,
@@ -109,11 +156,10 @@ INLINE_MATCH_CAP = 50
 
 @require_http_methods(["POST"])
 def match_selected_view(request):
-    # The form's action carries the sort that was on screen when "Match
-    # selected" was clicked (see items.html) - read it back so the redirect
-    # lands on the same view instead of silently resetting to the default.
-    sort, direction = _sort_params(request)
-    back = _items_url(sort, direction)
+    # The form's action carries the sort and filters that were on screen when
+    # "Match selected" was clicked (see items.html) - read them back so the
+    # redirect lands on the same view instead of resetting to the default.
+    back = _items_url(_query_state(request))
 
     item_ids = [int(v) for v in request.POST.getlist("item_id") if v.isdigit()]
     if not item_ids:

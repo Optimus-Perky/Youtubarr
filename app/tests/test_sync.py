@@ -397,7 +397,61 @@ def test_unknown_sort_key_falls_back_to_default_instead_of_crashing(client):
     resp = client.get(reverse("items"), {"sort": "'; drop table--"})
 
     assert resp.status_code == 200
-    assert resp.context["sort"] == "published"
+    # No such column - falls back to the natural (unsortable-from-the-UI)
+    # newest-first order rather than trusting the query string.
+    assert resp.context["sort"] == ""
+
+
+@pytest.mark.django_db
+def test_playlist_column_shows_the_friendly_title_not_the_raw_id(client):
+    pl = Playlist.objects.create(playlist_id="PLsomethinglong1", title="Car Music")
+    TrackItem.objects.create(playlist=pl, video_id="v1", title="Track")
+
+    resp = client.get(reverse("items"))
+
+    # The raw id still shows up as the filter dropdown's option value - the
+    # point is the *cell* shows the friendly name, not that the id vanishes
+    # from the page entirely.
+    assert b"<td class=\"small\">Car Music</td>" in resp.content
+
+
+@pytest.mark.django_db
+def test_title_filter_narrows_the_list(client):
+    pl = Playlist.objects.create(playlist_id="PLsomethinglong1")
+    TrackItem.objects.create(playlist=pl, video_id="v1", title="Sandstorm")
+    TrackItem.objects.create(playlist=pl, video_id="v2", title="Nightcall")
+
+    resp = client.get(reverse("items"), {"q_title": "sand"})
+
+    titles = [it.title for it in resp.context["items"]]
+    assert titles == ["Sandstorm"]
+
+
+@pytest.mark.django_db
+def test_mbid_filter_selects_only_unresolved_tracks(client):
+    pl = Playlist.objects.create(playlist_id="PLsomethinglong1")
+    from youtubarr.models import Artist
+    resolved = TrackItem.objects.create(playlist=pl, video_id="v1", title="Resolved")
+    resolved.artist = Artist.objects.create(name="Someone", mbid="561d854a-6a28-4aa7-8c99-323e6ce46c2a")
+    resolved.save()
+    TrackItem.objects.create(playlist=pl, video_id="v2", title="Unresolved")
+
+    resp = client.get(reverse("items"), {"q_mbid": "unresolved"})
+
+    titles = [it.title for it in resp.context["items"]]
+    assert titles == ["Unresolved"]
+
+
+@pytest.mark.django_db
+def test_notes_filter_matches_resolution_note(client):
+    pl = Playlist.objects.create(playlist_id="PLsomethinglong1")
+    TrackItem.objects.create(playlist=pl, video_id="v1", title="A", resolution_note="ambiguous: 3 artists")
+    TrackItem.objects.create(playlist=pl, video_id="v2", title="B", resolution_note="manually set")
+
+    resp = client.get(reverse("items"), {"q_notes": "ambiguous"})
+
+    titles = [it.title for it in resp.context["items"]]
+    assert titles == ["A"]
 
 
 @pytest.mark.django_db

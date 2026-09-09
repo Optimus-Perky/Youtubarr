@@ -1,2 +1,2 @@
-<a href="?sort={{ key }}&dir={% if sort == key and dir == 'asc' %}desc{% else %}asc{% endif %}"
+<a href="?sort={{ key }}&dir={% if sort == key and dir == 'asc' %}desc{% else %}asc{% endif %}{% if base_qs %}&{{ base_qs }}{% endif %}"
    class="text-decoration-none text-reset">{{ label }}{% if sort == key %} {% if dir == 'asc' %}▲{% else %}▼{% endif %}{% endif %}</a>
