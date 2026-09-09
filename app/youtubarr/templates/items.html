@@ -2,7 +2,8 @@
 {% block content %}
   <h1 class="display-6 fw-semibold mb-3">Items (latest)</h1>
 
-  <form id="match-selected-form" method="post" action="{% url 'match-selected' %}">{% csrf_token %}</form>
+  <form id="match-selected-form" method="post"
+        action="{% url 'match-selected' %}?sort={{ sort }}&dir={{ dir }}">{% csrf_token %}</form>
 
   <div class="d-flex align-items-center gap-2 mb-3">
     <button type="button" class="btn btn-sm btn-outline-primary" id="match-selected-btn" disabled

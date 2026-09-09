@@ -9,6 +9,7 @@ from django.http import (
     JsonResponse,
 )
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_http_methods
 
@@ -70,13 +71,24 @@ ITEM_SORT_FIELDS = {
 }
 
 
-def items_view(request):
+def _sort_params(request):
+    """Validate ?sort=/&dir= against the allow-list, so callers never have to
+    trust the query string directly."""
     sort = request.GET.get("sort", "published")
     if sort not in ITEM_SORT_FIELDS:
         sort = "published"
     direction = request.GET.get("dir", "desc" if sort == "published" else "asc")
     if direction not in ("asc", "desc"):
         direction = "asc"
+    return sort, direction
+
+
+def _items_url(sort, direction):
+    return f"{reverse('items')}?sort={sort}&dir={direction}"
+
+
+def items_view(request):
+    sort, direction = _sort_params(request)
 
     order_field = ITEM_SORT_FIELDS[sort]
     if direction == "desc":
@@ -97,10 +109,16 @@ INLINE_MATCH_CAP = 50
 
 @require_http_methods(["POST"])
 def match_selected_view(request):
+    # The form's action carries the sort that was on screen when "Match
+    # selected" was clicked (see items.html) - read it back so the redirect
+    # lands on the same view instead of silently resetting to the default.
+    sort, direction = _sort_params(request)
+    back = _items_url(sort, direction)
+
     item_ids = [int(v) for v in request.POST.getlist("item_id") if v.isdigit()]
     if not item_ids:
         messages.error(request, "No tracks selected.")
-        return redirect("items")
+        return redirect(back)
 
     if _worker_available():
         resolve_selected.delay(item_ids)
@@ -109,7 +127,7 @@ def match_selected_view(request):
             f"Matching {len(item_ids)} selected track(s) in the background — "
             "reload this page in a bit to see the result.",
         )
-        return redirect("items")
+        return redirect(back)
 
     if len(item_ids) > INLINE_MATCH_CAP:
         messages.error(
@@ -118,7 +136,7 @@ def match_selected_view(request):
             f"match inline (limit {INLINE_MATCH_CAP}) without risking a timeout. Select "
             "fewer, or try again once the worker is up.",
         )
-        return redirect("items")
+        return redirect(back)
 
     result = resolve_mbids_for_items(item_ids)
     messages.success(
@@ -126,7 +144,7 @@ def match_selected_view(request):
         f"Matched {result['resolved']} of {result['considered']} selected track(s); "
         f"{result['unresolved']} still unresolved.",
     )
-    return redirect("items")
+    return redirect(back)
 
 
 # --------------------------------------------------------------------------- #

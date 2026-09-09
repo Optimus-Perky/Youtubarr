@@ -459,6 +459,22 @@ def test_matching_a_selection_prefers_the_background_worker(client, monkeypatch)
     assert ti.resolution_attempted_at is None
 
 
+@pytest.mark.django_db
+def test_matching_a_selection_preserves_the_current_sort(client, monkeypatch):
+    """Regression: the redirect after matching used to drop back to the
+    default sort instead of wherever the user actually was."""
+    monkeypatch.setattr("youtubarr.views._worker_available", lambda: True)
+    monkeypatch.setattr(tasks.resolve_selected, "delay", lambda ids: None)
+
+    pl = Playlist.objects.create(playlist_id="PLsomethinglong1")
+    ti = TrackItem.objects.create(playlist=pl, video_id="v1", title="Track")
+
+    resp = client.post(f"{reverse('match-selected')}?sort=mbid&dir=asc", {"item_id": [ti.id]})
+
+    assert resp.status_code == 302
+    assert resp.url == f"{reverse('items')}?sort=mbid&dir=asc"
+
+
 # --------------------------------------------------------------------------- #
 # A sync outlives the page that started it
 # --------------------------------------------------------------------------- #
