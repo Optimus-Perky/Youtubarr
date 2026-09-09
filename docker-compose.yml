@@ -19,9 +19,32 @@ services:
       - ./data:/data
     depends_on:
       - redis
+      - netproxy
     restart: unless-stopped
 
   redis:
     image: redis:7-alpine
     network_mode: "container:passthroughvpn"
+    restart: unless-stopped
+
+  # A forward proxy for outbound YouTube/MusicBrainz calls, so they leave via
+  # the LAN's normal route instead of the VPN tunnel. passthroughvpn's shared
+  # netns (youtubarr, redis, and the other *arr containers) still needs the
+  # VPN for reaching each other and being reached by Lidarr - this only
+  # exists so specific outbound requests can opt out of it. See HTTP_PROXY /
+  # HTTPS_PROXY in .env.
+  #
+  # Sits on the plain docker "bridge" network (the same one passthroughvpn
+  # itself is attached to), since that's what makes it reachable without
+  # crossing into the VPN tunnel. That network predates compose, has no
+  # built-in DNS for container names, and (being the default bridge, not a
+  # user-defined one) won't accept a pinned IP either - so its address is
+  # whatever Docker assigns. Check it with:
+  #   docker inspect youtubarr-netproxy-1 --format '{{.NetworkSettings.Networks.bridge.IPAddress}}'
+  # and put that in HTTP_PROXY / HTTPS_PROXY in .env. It only needs
+  # re-checking if this container is ever removed and recreated - a plain
+  # restart keeps its address.
+  netproxy:
+    build: ./netproxy
+    network_mode: bridge
     restart: unless-stopped

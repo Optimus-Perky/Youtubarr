@@ -35,6 +35,20 @@ traffic leaves via the VPN. Consequences:
 - **Redis is `127.0.0.1:6379`**, not `redis:6379`; both containers share one
   localhost. `CELERY_BROKER_URL` in `.env` must match.
 - `passthroughvpn` must be running first, and if it restarts, restart these two.
+- **All the `*arr` apps share `passthroughvpn`'s netns** so they can reach each
+  other (and be reached by Lidarr) on localhost. That's the only reason
+  Youtubarr needs it — nothing here ever calls *out* to Lidarr, only the
+  reverse. Everything else, including MusicBrainz and the YouTube Data API,
+  ends up going through the VPN tunnel too, purely as a side effect.
+- MusicBrainz rate-limits (429/503) by source IP, and a shared VPN egress IP
+  eats that budget fast even at our own 1 req/sec. The `netproxy` service
+  (tinyproxy, plain docker `bridge` network, `HTTP_PROXY`/`HTTPS_PROXY` in
+  `.env`) routes MusicBrainz/YouTube calls around the tunnel instead — see the
+  service comments in `docker-compose.yml`. It's on the *default* bridge
+  network (same one `passthroughvpn` sits on, not a compose-managed one), so
+  it can't take a pinned IP — check its actual address with
+  `docker inspect youtubarr-netproxy-1 --format '{{.NetworkSettings.Networks.bridge.IPAddress}}'`
+  after any recreate and keep `.env` in sync.
 
 ### Never overwrite these
 
