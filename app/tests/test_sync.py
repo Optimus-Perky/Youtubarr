@@ -11,6 +11,7 @@ from youtubarr.models import Playlist, Snapshot, TrackItem
 
 YT_PL = "https://www.googleapis.com/youtube/v3/playlists"
 YT_ITEMS = "https://www.googleapis.com/youtube/v3/playlistItems"
+YT_VIDEOS = "https://www.googleapis.com/youtube/v3/videos"
 MB = "https://musicbrainz.org/ws/2/artist/"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 
@@ -214,6 +215,78 @@ def test_successful_sync_does_update_last_synced(client, settings, _inline):
 
 
 # --------------------------------------------------------------------------- #
+# Track length, fetched from YouTube alongside the rest of a track's metadata
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("value,expected", [
+    ("PT6M28S", 388),
+    ("PT45S", 45),
+    ("PT1H2M3S", 3723),
+    ("PT1H", 3600),
+    ("", None),
+    ("garbage", None),
+])
+def test_iso8601_duration_parsing(value, expected):
+    assert tasks._parse_iso8601_duration(value) == expected
+
+
+@pytest.mark.parametrize("seconds,expected", [
+    (None, ""),
+    (45, "0:45"),
+    (388, "6:28"),
+    (3723, "1:02:03"),
+])
+def test_duration_display_formatting(seconds, expected):
+    ti = TrackItem(duration_seconds=seconds)
+    assert ti.duration_display == expected
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_sync_fetches_and_stores_video_duration(client, settings, _inline):
+    settings.YOUTUBE_API_KEY = "TESTKEY"
+    pl = Playlist.objects.create(playlist_id="PLsomethinglong1")
+    responses.add(responses.GET, YT_PL,
+                  json={"items": [{"snippet": {"title": "Road Trip", "channelTitle": "Mark"}}]}, status=200)
+    responses.add(responses.GET, YT_ITEMS, json={"items": [
+        {"snippet": {"title": "Fatboy Slim - Right Here, Right Now", "channelTitle": "Mark",
+                     "publishedAt": "2024-01-01T00:00:00Z", "position": 0,
+                     "resourceId": {"videoId": "vid1"}}}]}, status=200)
+    responses.add(responses.GET, YT_VIDEOS,
+                  json={"items": [{"id": "vid1", "contentDetails": {"duration": "PT6M28S"}}]}, status=200)
+    responses.add(responses.GET, MB, json={"artists": []}, status=200)
+
+    client.post(reverse("sync-playlists"), headers={"hx-request": "true"})
+
+    ti = TrackItem.objects.get(video_id="vid1")
+    assert ti.duration_seconds == 388
+    assert ti.duration_display == "6:28"
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_sync_still_works_when_duration_lookup_fails(client, settings, _inline):
+    """videos.list is purely informational - a failed/unmocked lookup must
+    not stop the rest of the sync."""
+    settings.YOUTUBE_API_KEY = "TESTKEY"
+    pl = Playlist.objects.create(playlist_id="PLsomethinglong1")
+    responses.add(responses.GET, YT_PL,
+                  json={"items": [{"snippet": {"title": "Road Trip", "channelTitle": "Mark"}}]}, status=200)
+    responses.add(responses.GET, YT_ITEMS, json={"items": [
+        {"snippet": {"title": "A - B", "channelTitle": "C", "position": 0,
+                     "publishedAt": "2024-01-01T00:00:00Z",
+                     "resourceId": {"videoId": "vid1"}}}]}, status=200)
+    responses.add(responses.GET, YT_VIDEOS, status=500)
+    responses.add(responses.GET, MB, json={"artists": []}, status=200)
+
+    resp = client.post(reverse("sync-playlists"), headers={"hx-request": "true"})
+
+    assert "Sync complete" in resp.content.decode()
+    ti = TrackItem.objects.get(video_id="vid1")
+    assert ti.duration_seconds is None
+
+
+# --------------------------------------------------------------------------- #
 # Metadata refresh: rows created by earlier, unauthenticated syncs
 # --------------------------------------------------------------------------- #
 
@@ -409,6 +482,18 @@ def test_items_page_sorts_by_the_requested_column(client):
 
     titles = [it.title for it in resp.context["items"]]
     assert titles == ["Apple", "Zebra"]
+
+
+@pytest.mark.django_db
+def test_items_page_sorts_by_duration(client):
+    pl = Playlist.objects.create(playlist_id="PLsomethinglong1")
+    TrackItem.objects.create(playlist=pl, video_id="v1", title="Long", duration_seconds=600)
+    TrackItem.objects.create(playlist=pl, video_id="v2", title="Short", duration_seconds=45)
+
+    resp = client.get(reverse("items"), {"sort": "duration", "dir": "asc"})
+
+    titles = [it.title for it in resp.context["items"]]
+    assert titles == ["Short", "Long"]
 
 
 @pytest.mark.django_db

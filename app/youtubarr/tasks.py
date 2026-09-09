@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 from datetime import timedelta
 
@@ -25,8 +26,54 @@ logger = logging.getLogger(__name__)
 
 YT_API_ITEMS = "https://www.googleapis.com/youtube/v3/playlistItems"
 YT_API_PLAYLISTS = "https://www.googleapis.com/youtube/v3/playlists"
+YT_API_VIDEOS = "https://www.googleapis.com/youtube/v3/videos"
 MB_API = "https://musicbrainz.org/ws/2/artist/"
 MB_RECORDING_API = "https://musicbrainz.org/ws/2/recording/"
+
+_ISO8601_DURATION_RE = re.compile(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?")
+
+
+def _parse_iso8601_duration(value: str) -> int | None:
+    """'PT6M28S' -> 388. YouTube always returns this format for
+    contentDetails.duration; None if it doesn't match at all."""
+    match = _ISO8601_DURATION_RE.fullmatch(value or "")
+    if not match:
+        return None
+    hours, minutes, seconds = (int(g) if g else 0 for g in match.groups())
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def fetch_video_durations(video_ids: list[str], api_key: str, headers: dict) -> dict[str, int]:
+    """
+    Real track length in seconds for each video id, straight from YouTube
+    rather than guessed - the same number that shows on the video/watch page,
+    useful for a human eyeballing whether an automated match is even
+    plausible (see CLAUDE.md on why duration is deliberately NOT used to
+    automate matching - it's still a good sanity check for a person).
+
+    Batched 50 at a time (videos.list's max and 1 quota unit regardless of
+    how many ids), so this is cheap even for a full library. Purely
+    informational - a failed lookup just leaves the column blank rather than
+    raising, since it should never block a sync.
+    """
+    out: dict[str, int] = {}
+    for i in range(0, len(video_ids), 50):
+        chunk = video_ids[i:i + 50]
+        params = {"part": "contentDetails", "id": ",".join(chunk), "key": api_key}
+        try:
+            r = requests.get(YT_API_VIDEOS, params=params, headers=headers, timeout=30)
+        except requests.RequestException as exc:
+            logger.warning("Could not fetch video durations: %s", exc)
+            continue
+        if r.status_code != 200:
+            logger.warning("videos.list returned HTTP %d fetching durations", r.status_code)
+            continue
+        for item in r.json().get("items", []):
+            vid = item.get("id")
+            duration = _parse_iso8601_duration(item.get("contentDetails", {}).get("duration"))
+            if vid and duration is not None:
+                out[vid] = duration
+    return out
 
 # How long before we re-ask MusicBrainz about a track we could not identify.
 RESOLUTION_RETRY_DAYS = 30
@@ -121,7 +168,7 @@ def _upsert_liked_music(playlist: Playlist) -> int:
     return count
 
 
-def _refresh_existing_item(ti: TrackItem, title: str, channel: str, position: int) -> None:
+def _refresh_existing_item(ti: TrackItem, title: str, channel: str, position: int, duration_seconds=None) -> None:
     """
     Bring an existing row up to date with what YouTube now returns.
 
@@ -133,6 +180,11 @@ def _refresh_existing_item(ti: TrackItem, title: str, channel: str, position: in
     if ti.position != position:
         ti.position = position
         changed.append("position")
+    # Not a correction a human would make by hand, unlike title/channel below -
+    # always safe to fill in or fix regardless of manually_edited.
+    if duration_seconds is not None and ti.duration_seconds != duration_seconds:
+        ti.duration_seconds = duration_seconds
+        changed.append("duration_seconds")
 
     if not ti.manually_edited:
         # Don't trade a real title for a placeholder, but do replace a placeholder.
@@ -209,7 +261,14 @@ def fetch_playlist_items(playlist: Playlist) -> int:
             raise PlaylistSyncError(_api_error_message(r, playlist.playlist_id, authed))
 
         data = r.json()
-        for it in data.get("items", []):
+        page_items = data.get("items", [])
+        video_ids = [
+            it.get("snippet", {}).get("resourceId", {}).get("videoId")
+            for it in page_items
+        ]
+        durations = fetch_video_durations([v for v in video_ids if v], api_key, headers)
+
+        for it in page_items:
             sn = it.get("snippet", {})
             vd = sn.get("resourceId", {}).get("videoId")
             if not vd:
@@ -220,6 +279,7 @@ def fetch_playlist_items(playlist: Playlist) -> int:
             ch = sn.get("videoOwnerChannelTitle") or ""
             published = sn.get("publishedAt")
             position = sn.get("position", 0)
+            duration_seconds = durations.get(vd)
 
             with transaction.atomic():
                 ti, created = TrackItem.objects.get_or_create(
@@ -231,10 +291,11 @@ def fetch_playlist_items(playlist: Playlist) -> int:
                         position=position,
                         published_at=dateparser.parse(published) if published else None,
                         artist_name_guess=guess_artist_from_title(title, ch),
+                        duration_seconds=duration_seconds,
                     ),
                 )
                 if not created:
-                    _refresh_existing_item(ti, title, ch, position)
+                    _refresh_existing_item(ti, title, ch, position, duration_seconds)
             count += 1
 
         token = data.get("nextPageToken")

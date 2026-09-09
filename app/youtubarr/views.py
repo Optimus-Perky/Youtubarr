@@ -69,6 +69,7 @@ def playlists_view(request):
 ITEM_SORT_FIELDS = {
     "playlist": "playlist__title",
     "video": "video_id",
+    "duration": "duration_seconds",
     "title": "title",
     "artist": "artist_name_guess",
     "mbid": "artist__mbid",

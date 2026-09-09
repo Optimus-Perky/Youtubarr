@@ -70,6 +70,7 @@
           <col style="width: 2rem;">
           <col style="width: 12rem;">
           <col style="width: 8rem;">
+          <col style="width: 5rem;">
           <col style="width: 22rem;">
           <col style="width: 15rem;">
           <col style="width: 24rem;">
@@ -81,6 +82,7 @@
             <th><input type="checkbox" id="select-all" onchange="toggleAll(this)"></th>
             <th>{% include "partials/sort_header.html" with key="playlist" label="Playlist" %}</th>
             <th>{% include "partials/sort_header.html" with key="video" label="Video" %}</th>
+            <th>{% include "partials/sort_header.html" with key="duration" label="Length" %}</th>
             <th>{% include "partials/sort_header.html" with key="title" label="Title" %}</th>
             <th>{% include "partials/sort_header.html" with key="artist" label="Artist guess" %}</th>
             <th>{% include "partials/sort_header.html" with key="mbid" label="MBID" %}</th>

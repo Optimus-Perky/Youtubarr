@@ -57,6 +57,11 @@ class TrackItem(models.Model):
     published_at = models.DateTimeField(null=True, blank=True)
     position = models.IntegerField(default=0)
 
+    # Real track length from YouTube's own contentDetails, not guessed - a
+    # sanity check for a human eyeballing a match (see CLAUDE.md on why this
+    # is deliberately NOT used to automate matching itself).
+    duration_seconds = models.IntegerField(null=True, blank=True)
+
     # Set when a human edits the title/artist in the UI. Syncs then leave those
     # fields alone instead of overwriting the correction with YouTube's metadata.
     manually_edited = models.BooleanField(default=False)
@@ -69,6 +74,17 @@ class TrackItem(models.Model):
 
     class Meta:
         unique_together = ("playlist", "video_id")
+
+    @property
+    def duration_display(self) -> str:
+        """'6:28', '1:02:03', or '' when we don't have a duration yet."""
+        if self.duration_seconds is None:
+            return ""
+        minutes, seconds = divmod(self.duration_seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours:
+            return f"{hours}:{minutes:02d}:{seconds:02d}"
+        return f"{minutes}:{seconds:02d}"
 
 class Snapshot(models.Model):
     """What we actually serve to Lidarr; newest wins."""
