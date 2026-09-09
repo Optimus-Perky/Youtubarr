@@ -72,6 +72,14 @@ class TrackItem(models.Model):
     resolution_note = models.CharField(max_length=255, blank=True, default="")
     resolution_attempted_at = models.DateTimeField(null=True, blank=True)
 
+    # The top vote-getter from a recording-title consensus search that
+    # *didn't* clear the confidence bar (see MB_MIN_CONSENSUS_SHARE/VOTES in
+    # tasks.py) - kept around so a human can review and accept it with one
+    # click instead of it being silently discarded. Blank whenever there's
+    # no such candidate, or once the track is actually resolved.
+    best_guess_name = models.CharField(max_length=255, blank=True, default="")
+    best_guess_mbid = models.CharField(max_length=36, blank=True, default="")
+
     class Meta:
         unique_together = ("playlist", "video_id")
 

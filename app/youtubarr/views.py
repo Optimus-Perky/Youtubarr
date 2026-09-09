@@ -17,7 +17,7 @@ from django.utils import timezone
 from django.views.decorators.http import require_http_methods
 
 from .models import AppSettings, Artist, Playlist, Snapshot, TrackItem
-from .tasks import lookup_mb_artist_name, resolve_mbids_for_items, resolve_selected, run_sync, sync_task
+from .tasks import _link_artist, lookup_mb_artist_name, resolve_mbids_for_items, resolve_selected, run_sync, sync_task
 from .utils import YouTubeAuthError, oauth_status
 
 logger = logging.getLogger(__name__)
@@ -512,6 +512,24 @@ def match_item(request, item_id):
     it = get_object_or_404(TrackItem, id=item_id)
     resolve_mbids_for_items([it.id])
     it.refresh_from_db()
+    return item_row(request, item_id)
+
+
+@require_http_methods(["POST"])
+def accept_best_guess(request, item_id):
+    """
+    Link the track to the best_guess_* MusicBrainz recording search left it
+    with - the candidate a consensus check found but didn't trust enough to
+    apply on its own (e.g. only 1 matching recording, or too even a split).
+    A human choosing to accept it is exactly the kind of judgment call that
+    check is deliberately too cautious to make by itself.
+    """
+    it = get_object_or_404(TrackItem, id=item_id)
+    if it.best_guess_mbid and it.best_guess_name:
+        note = f"manually accepted best guess ({it.resolution_note})" if it.resolution_note else "manually accepted best guess"
+        _link_artist(it, it.best_guess_name, it.best_guess_mbid, note)
+        it.manually_edited = True
+        it.save(update_fields=["manually_edited"])
     return item_row(request, item_id)
 
 

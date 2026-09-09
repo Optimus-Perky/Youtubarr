@@ -71,42 +71,49 @@ def mb_returns(recordings):
 @responses.activate
 def test_unanimous_candidates_resolve_even_when_no_length_matches():
     mb_returns(PJANOO)
-    name, mbid, note = search_mb_artist_by_recording("Pjanoo")
+    name, mbid, note, best_guess = search_mb_artist_by_recording("Pjanoo")
     assert (name, mbid) == ("Eric Prydz", PRYDZ)
     assert "8/8" in note
+    assert best_guess == ("Eric Prydz", PRYDZ)
 
 
 @responses.activate
 def test_apostrophe_and_credit_variants_still_agree():
     mb_returns(LOLAS_THEME)
-    name, mbid, _ = search_mb_artist_by_recording("Lola's Theme")
+    name, mbid, _, _ = search_mb_artist_by_recording("Lola's Theme")
     assert (name, mbid) == ("The Shapeshifters", SHAPESHIFTERS)
 
 
 @responses.activate
 def test_majority_wins_over_a_single_remixer():
     mb_returns(NINE_PM)
-    name, mbid, note = search_mb_artist_by_recording("9PM (Till I Come)")
+    name, mbid, note, best_guess = search_mb_artist_by_recording("9PM (Till I Come)")
     assert (name, mbid) == ("ATB", ATB)
     assert "3/4" in note
+    assert best_guess == ("ATB", ATB)
 
 
 @responses.activate
 def test_similar_but_different_titles_are_rejected():
     """'Children' must not match 'Children's Children'."""
     mb_returns(CHILDREN)
-    name, mbid, note = search_mb_artist_by_recording("Children")
+    name, mbid, note, best_guess = search_mb_artist_by_recording("Children")
     assert name is None and mbid is None
     assert "no exact title match" in note
+    assert best_guess is None, "nothing exact-matched, so there's no candidate to offer at all"
 
 
 @responses.activate
 def test_scattered_artists_are_rejected_rather_than_guessed():
     """The old code would have confidently returned the wrong artist here."""
     mb_returns(RIGHT_HERE)
-    name, mbid, note = search_mb_artist_by_recording("Right Here, Right Now")
+    name, mbid, note, best_guess = search_mb_artist_by_recording("Right Here, Right Now")
     assert name is None and mbid is None
     assert "ambiguous" in note
+    # Jesus Jones got the most votes (2/8) even though it's nowhere near
+    # confident enough to auto-apply - that's exactly the candidate a human
+    # reviewing this row should be offered to accept or reject by hand.
+    assert best_guess == ("Jesus Jones", "b2")
 
 
 @responses.activate
@@ -115,6 +122,25 @@ def test_upload_noise_is_stripped_before_searching():
     search_mb_artist_by_recording("Pjanoo (Official Video) [HQ]")
     from urllib.parse import unquote
     assert 'recording:"Pjanoo"' in unquote(responses.calls[0].request.url)
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_ambiguous_result_persists_a_reviewable_best_guess():
+    """The top vote-getter from an ambiguous consensus check should survive
+    onto the track, not be thrown away with only the note text left behind -
+    that's what lets a human accept it with one click instead of the
+    algorithm's own working being invisible."""
+    pl = Playlist.objects.create(playlist_id="PLsomethinglong1")
+    ti = TrackItem.objects.create(playlist=pl, video_id="v1", title="Right Here, Right Now", artist_name_guess="")
+    mb_returns(RIGHT_HERE)
+
+    tasks.resolve_mbids()
+
+    ti.refresh_from_db()
+    assert ti.artist is None
+    assert ti.best_guess_name == "Jesus Jones"
+    assert ti.best_guess_mbid == "b2"
 
 
 @pytest.mark.django_db

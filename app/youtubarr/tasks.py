@@ -351,26 +351,31 @@ def search_mb_artist_by_recording(title: str):
     name the same artist. Duration is deliberately NOT used: uploads are usually
     edits or remasters whose length does not match the MusicBrainz recording.
 
-    Returns (name, mbid, note). name/mbid are None when nothing is trustworthy;
-    note always explains the outcome.
+    Returns (name, mbid, note, best_guess). name/mbid are None when nothing
+    is trustworthy; note always explains the outcome. best_guess is
+    (name, mbid) for the top vote-getter whenever at least one candidate
+    with an artist credit exists - even when it didn't clear the confidence
+    bar - so a human reviewing the "ambiguous" note has something concrete
+    to accept instead of the runner-up being silently discarded. None only
+    when there was truly nothing to go on (no candidates, no credits, etc).
     """
     cleaned = clean_track_title(title)
     target = normalize_title(cleaned)
     if not target:
-        return None, None, "no usable title"
+        return None, None, "no usable title", None
 
     params = {"query": f'recording:"{cleaned}"', "fmt": "json", "limit": 25}
     try:
         r = requests.get(MB_RECORDING_API, params=params, headers=MB_HEADERS, timeout=30)
     except requests.RequestException as exc:
-        return None, None, f"MusicBrainz unreachable: {exc}"
+        return None, None, f"MusicBrainz unreachable: {exc}", None
     if r.status_code != 200:
-        return None, None, f"MusicBrainz returned HTTP {r.status_code}"
+        return None, None, f"MusicBrainz returned HTTP {r.status_code}", None
 
     recordings = r.json().get("recordings") or []
     exact = [rec for rec in recordings if normalize_title(rec.get("title") or "") == target]
     if not exact:
-        return None, None, f"no exact title match ({len(recordings)} candidates)"
+        return None, None, f"no exact title match ({len(recordings)} candidates)", None
 
     votes = {}
     for rec in exact:
@@ -382,20 +387,21 @@ def search_mb_artist_by_recording(title: str):
         entry["count"] += 1
 
     if not votes:
-        return None, None, "candidates had no artist credit"
+        return None, None, "candidates had no artist credit", None
 
     total = sum(v["count"] for v in votes.values())
     best_mbid, best = max(votes.items(), key=lambda kv: kv[1]["count"])
     share = best["count"] / total
+    best_guess = (best["name"], best_mbid)
 
     if best["count"] < MB_MIN_CONSENSUS_VOTES or share < MB_MIN_CONSENSUS_SHARE:
         others = len(votes)
         return None, None, (
             f"ambiguous: {others} artists for this title, "
             f"best is {best['name']} with only {best['count']}/{total}"
-        )
+        ), best_guess
 
-    return best["name"], best_mbid, f"MusicBrainz recording consensus {best['count']}/{total}"
+    return best["name"], best_mbid, f"MusicBrainz recording consensus {best['count']}/{total}", best_guess
 
 
 def _link_artist(ti: TrackItem, name: str, mbid: str, note: str) -> None:
@@ -411,7 +417,13 @@ def _link_artist(ti: TrackItem, name: str, mbid: str, note: str) -> None:
     ti.artist_name_guess = name
     ti.resolution_note = note
     ti.resolution_attempted_at = timezone.now()
-    ti.save(update_fields=["artist", "artist_name_guess", "resolution_note", "resolution_attempted_at"])
+    # No longer relevant once actually resolved.
+    ti.best_guess_name = ""
+    ti.best_guess_mbid = ""
+    ti.save(update_fields=[
+        "artist", "artist_name_guess", "resolution_note", "resolution_attempted_at",
+        "best_guess_name", "best_guess_mbid",
+    ])
 
 
 def _resolve_items(items: list[TrackItem], progress=None) -> dict:
@@ -437,6 +449,7 @@ def _resolve_items(items: list[TrackItem], progress=None) -> dict:
 
         name = mbid = None
         note = ""
+        best_guess = None
 
         # 1) we think we know the artist's name already
         guess = (ti.artist_name_guess or "").strip()
@@ -453,7 +466,7 @@ def _resolve_items(items: list[TrackItem], progress=None) -> dict:
             if key not in by_title:
                 by_title[key] = search_mb_artist_by_recording(ti.title)
                 time.sleep(1.05)
-            name, mbid, note = by_title[key]
+            name, mbid, note, best_guess = by_title[key]
 
         if mbid and name:
             _link_artist(ti, name, mbid, note)
@@ -462,7 +475,10 @@ def _resolve_items(items: list[TrackItem], progress=None) -> dict:
             unresolved += 1
             ti.resolution_note = note or "could not identify an artist"
             ti.resolution_attempted_at = timezone.now()
-            ti.save(update_fields=["resolution_note", "resolution_attempted_at"])
+            ti.best_guess_name, ti.best_guess_mbid = best_guess or ("", "")
+            ti.save(update_fields=[
+                "resolution_note", "resolution_attempted_at", "best_guess_name", "best_guess_mbid",
+            ])
 
     return {"resolved": resolved, "unresolved": unresolved, "considered": total}
 

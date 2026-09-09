@@ -26,6 +26,17 @@
       {% elif not it.artist.mbid %}
         <span class="text-warning">unresolved</span>
         {% if it.resolution_note %}<div class="text-muted" style="font-size:.75rem;">{{ it.resolution_note|truncatechars:90 }}</div>{% endif %}
+        {% if it.best_guess_mbid %}
+          <button type="button"
+                  hx-post="{% url 'accept-best-guess' it.id %}"
+                  hx-target="#row-{{ it.id }}"
+                  hx-swap="outerHTML"
+                  hx-sync="closest tr:queue"
+                  class="btn btn-sm btn-outline-primary mt-1" style="font-size:.7rem; padding:.1rem .4rem;"
+                  title="MusicBrainz found this as the top candidate but wasn't confident enough to apply it automatically - review and accept by hand.">
+            Accept {{ it.best_guess_name }}
+          </button>
+        {% endif %}
       {% elif it.resolution_note %}
         <span class="text-muted" style="font-size:.75rem;">{{ it.resolution_note|truncatechars:90 }}</span>
       {% endif %}
