@@ -465,17 +465,27 @@ def edit_item(request, item_id):
 
     mbid_error = None
     current_mbid = it.artist.mbid if it.artist else ""
-    if mbid and mbid != current_mbid:
-        match = MBID_RE.search(mbid)
-        if not match:
-            # This is an HTMX partial swap of just the row - Django's messages
-            # framework has nowhere to render, so the error has to travel back
-            # in the row itself or it's invisible and the save just looks like
-            # it silently did nothing.
-            mbid_error = "That doesn't look like a MusicBrainz artist ID (paste the ID or its musicbrainz.org artist page URL)."
-        else:
-            _set_artist_by_mbid(it, match.group(0).lower())
+    if mbid != current_mbid:
+        if not mbid:
+            # Cleared by hand - unlink rather than leaving the old artist in
+            # place, and clear resolution_attempted_at so it's immediately
+            # eligible for another automatic pass instead of waiting out
+            # RESOLUTION_RETRY_DAYS.
+            it.artist = None
+            it.resolution_note = ""
+            it.resolution_attempted_at = None
             changed += ["artist", "resolution_note", "resolution_attempted_at"]
+        else:
+            match = MBID_RE.search(mbid)
+            if not match:
+                # This is an HTMX partial swap of just the row - Django's
+                # messages framework has nowhere to render, so the error has
+                # to travel back in the row itself or it's invisible and the
+                # save just looks like it silently did nothing.
+                mbid_error = "That doesn't look like a MusicBrainz artist ID (paste the ID or its musicbrainz.org artist page URL)."
+            else:
+                _set_artist_by_mbid(it, match.group(0).lower())
+                changed += ["artist", "resolution_note", "resolution_attempted_at"]
 
     if changed:
         # Remember this was corrected by hand so a later sync does not

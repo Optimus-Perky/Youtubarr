@@ -373,6 +373,28 @@ def test_malformed_mbid_is_rejected_with_a_visible_error(client):
     assert ti.manually_edited is False
 
 
+@pytest.mark.django_db
+def test_clearing_the_mbid_field_unlinks_the_artist(client):
+    """Regression: an empty mbid was falsy, so the save silently did nothing
+    and a wrong manual match could never be removed through the UI."""
+    from youtubarr.models import Artist
+
+    pl = Playlist.objects.create(playlist_id="PLsomethinglong1")
+    artist = Artist.objects.create(name="Wrong Artist", mbid="561d854a-6a28-4aa7-8c99-323e6ce46c2a")
+    ti = TrackItem.objects.create(
+        playlist=pl, video_id="v1", title="Track",
+        artist=artist, resolution_note="manually set",
+    )
+
+    client.post(reverse("edit-item", args=[ti.id]), {"title": ti.title, "mbid": ""})
+
+    ti.refresh_from_db()
+    assert ti.artist is None
+    assert ti.resolution_note == ""
+    assert ti.resolution_attempted_at is None
+    assert ti.manually_edited is True
+
+
 # --------------------------------------------------------------------------- #
 # Items page: sorting and matching a selection
 # --------------------------------------------------------------------------- #
