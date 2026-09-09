@@ -247,6 +247,20 @@ def fetch_playlist_items(playlist: Playlist) -> int:
     return count
 
 
+def lookup_mb_artist_name(mbid: str) -> str | None:
+    """Fetch an artist's canonical name for a MBID, so a manually-entered ID in
+    the UI can be stored under its real name rather than whatever guess was
+    on the track."""
+    try:
+        r = requests.get(f"{MB_API}{mbid}", params={"fmt": "json"}, headers=MB_HEADERS, timeout=30)
+    except requests.RequestException as exc:
+        logger.warning("MusicBrainz artist lookup failed for %r: %s", mbid, exc)
+        return None
+    if r.status_code == 200:
+        return r.json().get("name")
+    return None
+
+
 def search_mb_artist_mbid(name: str) -> str | None:
     if not name:
         return None

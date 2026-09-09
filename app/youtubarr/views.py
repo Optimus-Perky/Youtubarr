@@ -1,4 +1,5 @@
 import logging
+import re
 
 from django.conf import settings
 from django.contrib import messages
@@ -11,11 +12,13 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_http_methods
 
-from .models import AppSettings, Playlist, Snapshot, TrackItem
-from .tasks import run_sync, sync_task
+from .models import AppSettings, Artist, Playlist, Snapshot, TrackItem
+from .tasks import lookup_mb_artist_name, run_sync, sync_task
 from .utils import YouTubeAuthError, oauth_status
 
 logger = logging.getLogger(__name__)
+
+MBID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
 def settings_view(request):
@@ -260,11 +263,36 @@ def toggle_blacklist(request, item_id):
     return item_row(request, item_id)
 
 
+def _set_artist_by_mbid(it: TrackItem, mbid: str) -> None:
+    """
+    Point a track at a specific MusicBrainz artist, chosen by hand rather than
+    guessed. Prefers an Artist row that already carries this mbid, so
+    correcting the same artist twice does not create a duplicate; otherwise
+    looks up the real name (falling back to whatever guess is on the track)
+    rather than trusting arbitrary text as the artist's name.
+    """
+    artist = Artist.objects.filter(mbid=mbid).first()
+    if not artist:
+        name = lookup_mb_artist_name(mbid) or it.artist_name_guess or it.title
+        artist, created = Artist.objects.get_or_create(
+            name=name, defaults={"mbid": mbid, "resolved_from": "manually set"}
+        )
+        if not created and artist.mbid != mbid:
+            artist.mbid = mbid
+            artist.resolved_from = "manually set"
+            artist.save(update_fields=["mbid", "resolved_from"])
+    it.artist = artist
+    it.resolution_note = "manually set"
+    it.resolution_attempted_at = timezone.now()
+
+
 @require_http_methods(["POST"])
 def edit_item(request, item_id):
     it = get_object_or_404(TrackItem, id=item_id)
     title = request.POST.get("title", it.title)
     artist_guess = request.POST.get("artist_name_guess", it.artist_name_guess)
+    mbid = (request.POST.get("mbid") or "").strip()
+
     changed = []
     if title != it.title:
         it.title = title
@@ -272,6 +300,15 @@ def edit_item(request, item_id):
     if artist_guess != it.artist_name_guess:
         it.artist_name_guess = artist_guess
         changed.append("artist_name_guess")
+
+    current_mbid = it.artist.mbid if it.artist else ""
+    if mbid and mbid != current_mbid:
+        if not MBID_RE.match(mbid):
+            messages.error(request, "That doesn't look like a MusicBrainz artist ID (expected a UUID).")
+        else:
+            _set_artist_by_mbid(it, mbid)
+            changed += ["artist", "resolution_note", "resolution_attempted_at"]
+
     if changed:
         # Remember this was corrected by hand so a later sync does not
         # overwrite it with YouTube's own metadata.

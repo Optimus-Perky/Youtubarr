@@ -21,12 +21,13 @@
       <input type="text" name="artist_name_guess" value="{{ it.artist_name_guess }}" class="form-control form-control-sm" style="max-width: 14rem;">
   </td>
   <td class="small">
-    {% if it.artist.mbid %}
-      <span class="font-monospace">{{ it.artist.mbid }}</span>
-    {% else %}
-      <span class="text-warning" title="{{ it.resolution_note }}">unresolved</span>
-      {% if it.resolution_note %}<div class="text-muted" style="font-size:.75rem;">{{ it.resolution_note|truncatechars:70 }}</div>{% endif %}
-    {% endif %}
+      <input type="text" name="mbid" value="{{ it.artist.mbid|default:'' }}"
+             placeholder="paste a MusicBrainz artist ID"
+             class="form-control form-control-sm font-monospace" style="max-width: 16rem;">
+      {% if not it.artist.mbid %}
+        <div class="text-warning" style="font-size:.75rem;" title="{{ it.resolution_note }}">unresolved</div>
+        {% if it.resolution_note %}<div class="text-muted" style="font-size:.75rem;">{{ it.resolution_note|truncatechars:70 }}</div>{% endif %}
+      {% endif %}
   </td>
   <td class="small text-nowrap">{{ it.published_at|date:"Y-m-d H:i" }}</td>
   <td class="text-nowrap">

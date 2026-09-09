@@ -322,6 +322,35 @@ def test_editing_an_item_marks_it_as_hand_edited(client):
     assert ti.manually_edited is True
 
 
+@pytest.mark.django_db
+@responses.activate
+def test_manually_entering_an_mbid_resolves_the_track(client):
+    pl = Playlist.objects.create(playlist_id="PLsomethinglong1")
+    ti = TrackItem.objects.create(playlist=pl, video_id="v1", title="Children", artist_name_guess="")
+    mbid = "561d854a-6a28-4aa7-8c99-323e6ce46c2a"
+    responses.add(responses.GET, f"{MB}{mbid}", json={"name": "Robert Miles"})
+
+    client.post(reverse("edit-item", args=[ti.id]), {"title": ti.title, "mbid": mbid})
+
+    ti.refresh_from_db()
+    assert ti.artist.mbid == mbid
+    assert ti.artist.name == "Robert Miles"
+    assert ti.resolution_note == "manually set"
+    assert ti.manually_edited is True
+
+
+@pytest.mark.django_db
+def test_malformed_mbid_is_rejected_not_saved(client):
+    pl = Playlist.objects.create(playlist_id="PLsomethinglong1")
+    ti = TrackItem.objects.create(playlist=pl, video_id="v1", title="Children", artist_name_guess="")
+
+    client.post(reverse("edit-item", args=[ti.id]), {"title": ti.title, "mbid": "not-a-real-mbid"})
+
+    ti.refresh_from_db()
+    assert ti.artist is None
+    assert ti.manually_edited is False
+
+
 # --------------------------------------------------------------------------- #
 # A sync outlives the page that started it
 # --------------------------------------------------------------------------- #
