@@ -134,7 +134,11 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+# Display timezone only - datetimes are still stored as UTC in the database
+# (USE_TZ=True), this just controls what {{ value|date:... }} renders in
+# templates. "Europe/London" (not a fixed UTC+1) so BST is handled
+# automatically rather than needing a manual flip every autumn/spring.
+TIME_ZONE = 'Europe/London'
 
 USE_I18N = True
 
