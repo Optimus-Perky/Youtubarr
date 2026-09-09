@@ -1,20 +1,38 @@
-from django.shortcuts import render, redirect, get_object_or_404
-from django.views.decorators.http import require_http_methods
-from django.http import JsonResponse, HttpResponse, HttpResponseForbidden, HttpResponseBadRequest
-from django.contrib import messages
+import logging
+
 from django.conf import settings
-from .models import AppSettings, Playlist, TrackItem, Snapshot
+from django.contrib import messages
+from django.http import (
+    HttpResponse,
+    HttpResponseForbidden,
+    JsonResponse,
+)
+from django.shortcuts import get_object_or_404, redirect, render
+from django.views.decorators.http import require_http_methods
+
+from .models import AppSettings, Playlist, Snapshot, TrackItem
+from .tasks import run_sync, sync_task
+from .utils import YouTubeAuthError, oauth_status
+
+logger = logging.getLogger(__name__)
+
 
 def settings_view(request):
     s = AppSettings.load()
     if request.method == "POST":
-        s.youtube_api_key = request.POST.get("youtube_api_key","").strip()
+        s.youtube_api_key = request.POST.get("youtube_api_key", "").strip()
         s.save()
         messages.success(request, "YouTube API key updated.")
         return redirect("settings")
-    return render(request, "settings.html", {"settings": s, "env_has_key": bool(settings.YOUTUBE_API_KEY),"lidarr_token": getattr(settings, "LIDARR_TOKEN", None)})
+    return render(request, "settings.html", {
+        "settings": s,
+        "env_has_key": bool(settings.YOUTUBE_API_KEY),
+        "lidarr_token": getattr(settings, "LIDARR_TOKEN", None),
+        "oauth": oauth_status(),
+    })
 
-@require_http_methods(["GET","POST"])
+
+@require_http_methods(["GET", "POST"])
 def playlists_view(request):
     if request.method == "POST":
         pid = (request.POST.get("playlist_id") or "").strip()
@@ -24,20 +42,174 @@ def playlists_view(request):
         else:
             messages.error(request, "Playlist ID required.")
         return redirect("playlists")
-    pls = Playlist.objects.all().order_by("-last_synced","playlist_id")
-    return render(request, "playlists.html", {"playlists": pls})
+    return render(request, "playlists.html", {
+        "playlists": _playlists_qs(),
+        "oauth": oauth_status(),
+    })
+
 
 def items_view(request):
     items = (TrackItem.objects
-             .select_related("playlist","artist")
-             .order_by("-published_at","-id")[:500])
+             .select_related("playlist", "artist")
+             .order_by("-published_at", "-id")[:500])
     return render(request, "items.html", {"items": items})
 
-# ---- HTMX helpers ----
+
+# --------------------------------------------------------------------------- #
+# Sync
+# --------------------------------------------------------------------------- #
+
+def _playlists_qs():
+    return Playlist.objects.all().order_by("-last_synced", "playlist_id")
+
+
+def playlist_table(request):
+    """HTMX: re-render just the playlist table after a sync."""
+    return render(request, "partials/playlist_table.html", {"playlists": _playlists_qs()})
+
+
+def _worker_available() -> bool:
+    """
+    True only if a Celery worker is actually listening.
+
+    Without this check a queued task sits in Redis forever when the worker is down,
+    and the UI spins with no explanation. If nothing answers, we run the sync inline
+    instead so the button always does something.
+    """
+    try:
+        from core.celery import app as celery_app
+        return bool(celery_app.control.ping(timeout=1.0))
+    except Exception as exc:
+        logger.info("No Celery worker reachable (%s); running sync inline", exc)
+        return False
+
+
+def _start_sync(request, playlist_ids=None, label="All playlists"):
+    """
+    Kick off a sync.
+
+    Prefers Celery so the request returns immediately; falls back to running inline
+    when no worker is listening. Responds with an HTMX fragment when htmx made the
+    request, and with a plain redirect + message otherwise, so the button still works
+    if the htmx script did not load.
+    """
+    is_htmx = request.headers.get("HX-Request") == "true"
+    worker = _worker_available()
+
+    if worker:
+        try:
+            async_result = sync_task.delay(playlist_ids)
+            if is_htmx:
+                return render(request, "partials/sync_status.html", {
+                    "task_id": async_result.id,
+                    "state": "PENDING",
+                    "message": f"Sync queued: {label}",
+                    "label": label,
+                })
+            messages.success(
+                request,
+                f"Sync started in the background: {label}. Reload this page in a minute to see the result.",
+            )
+            return redirect("playlists")
+        except Exception as exc:
+            logger.warning("Celery dispatch failed (%s); running sync inline", exc)
+
+    try:
+        result = run_sync(playlist_ids=playlist_ids)
+    except Exception as exc:
+        logger.exception("Inline sync failed")
+        if is_htmx:
+            return render(request, "partials/sync_status.html", {"state": "FAILURE", "error": str(exc)})
+        messages.error(request, f"Sync failed: {exc}")
+        return redirect("playlists")
+
+    if is_htmx:
+        return render(request, "partials/sync_status.html", {
+            "state": "SUCCESS", "result": result, "inline": True, "label": label,
+        })
+
+    if result["errors"]:
+        for err in result["errors"]:
+            messages.error(request, f"Sync problem — {err}")
+    else:
+        messages.success(
+            request,
+            f"Sync complete: {result['items']} tracks, "
+            f"{result['snapshot_artists']} artists published to Lidarr.",
+        )
+    return redirect("playlists")
+
+
+@require_http_methods(["POST"])
+def sync_playlists_view(request):
+    """Sync every enabled playlist."""
+    return _start_sync(request, playlist_ids=None, label="All enabled playlists")
+
+
+@require_http_methods(["POST"])
+def sync_playlist_view(request, pk):
+    """Sync a single playlist."""
+    pl = get_object_or_404(Playlist, pk=pk)
+    return _start_sync(request, playlist_ids=[pl.playlist_id], label=pl.title or pl.playlist_id)
+
+
+def sync_status_view(request, task_id):
+    """HTMX polling endpoint reporting on a running sync."""
+    from celery.result import AsyncResult
+
+    from core.celery import app as celery_app
+
+    ctx = {"task_id": task_id}
+    try:
+        res = AsyncResult(task_id, app=celery_app)
+        state = res.state
+        ctx["state"] = state
+        if state == "PROGRESS":
+            ctx["message"] = (res.info or {}).get("message", "Working…")
+        elif state == "SUCCESS":
+            ctx["result"] = res.result
+        elif state == "FAILURE":
+            ctx["error"] = str(res.result)
+        else:
+            ctx["message"] = "Waiting for a worker to pick this up…"
+    except Exception as exc:
+        ctx["state"] = "FAILURE"
+        ctx["error"] = f"Could not read task status: {exc}"
+    return render(request, "partials/sync_status.html", ctx)
+
+
+@require_http_methods(["POST"])
+def add_liked_music(request):
+    """Add the YouTube Music 'Liked Music' pseudo-playlist."""
+    status = oauth_status()
+    if not status["file_exists"]:
+        messages.error(
+            request,
+            f"Liked Music needs OAuth. No oauth.json found at {status['path']} — "
+            "run 'ytmusicapi oauth' and put the file in your mounted data directory.",
+        )
+    elif not (status["client_id_set"] and status["client_secret_set"]):
+        messages.error(
+            request,
+            "Liked Music needs YOUTUBE_OAUTH_CLIENT_ID and YOUTUBE_OAUTH_CLIENT_SECRET set in .env.",
+        )
+    else:
+        _, created = Playlist.objects.get_or_create(
+            playlist_id="LM",
+            defaults={"title": "Liked Music", "channel_title": "YouTube Music"},
+        )
+        messages.success(request, "Added Liked Music." if created else "Liked Music is already in the list.")
+    return redirect("playlists")
+
+
+# --------------------------------------------------------------------------- #
+# HTMX item helpers
+# --------------------------------------------------------------------------- #
 
 def item_row(request, item_id):
-    it = get_object_or_404(TrackItem.objects.select_related("playlist","artist"), id=item_id)
+    it = get_object_or_404(TrackItem.objects.select_related("playlist", "artist"), id=item_id)
     return render(request, "partials/item_row.html", {"it": it})
+
 
 @require_http_methods(["POST"])
 def toggle_blacklist(request, item_id):
@@ -48,6 +220,7 @@ def toggle_blacklist(request, item_id):
         it.blacklisted = val
         it.save(update_fields=["blacklisted"])
     return item_row(request, item_id)
+
 
 @require_http_methods(["POST"])
 def edit_item(request, item_id):
@@ -65,6 +238,7 @@ def edit_item(request, item_id):
         it.save(update_fields=changed)
     return item_row(request, item_id)
 
+
 @require_http_methods(["POST"])
 def delete_item(request, item_id):
     it = get_object_or_404(TrackItem, id=item_id)
@@ -72,8 +246,10 @@ def delete_item(request, item_id):
     # HTMX: tell client to remove the row
     return HttpResponse(status=204, headers={"HX-Trigger": "item-deleted"})
 
+
 def healthz(request):
     return HttpResponse("ok")
+
 
 def lidarr_youtubarr_view(request):
     # token via ?token=... or X-Api-Key header
@@ -82,13 +258,3 @@ def lidarr_youtubarr_view(request):
         return HttpResponseForbidden("missing/invalid token")
     snap = Snapshot.objects.order_by("-created_at").first()
     return JsonResponse(snap.payload if snap else [], safe=False)
-
-def add_liked_music(request):
-    if request.method == "POST":
-        if not settings.YTMUSIC_COOKIE_JSON:
-            return HttpResponse("YTMUSIC_COOKIE_JSON not configured", status=500)
-        Playlist.objects.get_or_create(
-            playlist_id="LM",
-            defaults={"title": "Liked Music", "channel_title": "YouTube Music"}
-        )
-        return redirect("playlists")

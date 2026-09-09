@@ -18,6 +18,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 env = environ.Env(DEBUG=(bool, False))
 environ.Env.read_env(env_file=os.path.join(BASE_DIR, ".env")) if os.path.exists(os.path.join(BASE_DIR, ".env")) else None
 
+# Directory for persistent state (sqlite db, oauth.json). Mounted as a volume.
+DATA_DIR = env("DATA_DIR", default="/data")
+
 YOUTUBE_OAUTH_CLIENT_ID = env("YOUTUBE_OAUTH_CLIENT_ID", default=None)
 YOUTUBE_OAUTH_CLIENT_SECRET = env("YOUTUBE_OAUTH_CLIENT_SECRET", default=None)
 
@@ -29,20 +32,25 @@ YOUTUBE_OAUTH_CLIENT_SECRET = env("YOUTUBE_OAUTH_CLIENT_SECRET", default=None)
 SECRET_KEY = env("SECRET_KEY", default="dev-key-unsafe")
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = env("DEBUG")
-ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
-CSRF_TRUSTED_ORIGINS = []
-for h in ALLOWED_HOSTS:
-    h = h.strip()
-    if not h:
-        continue
-    if h.startswith("http://") or h.startswith("https://"):
-        CSRF_TRUSTED_ORIGINS.append(h)
-    else:
-        # cover http/https, with and without :8000 (for dev)
-        CSRF_TRUSTED_ORIGINS.append(f"http://{h}")
-        CSRF_TRUSTED_ORIGINS.append(f"http://{h}:8000")
-        CSRF_TRUSTED_ORIGINS.append(f"https://{h}")
-SECURE_PROXY_SSL_HEADER = ["HTTP_X_FORWARDED_PROTO", "https"]
+ALLOWED_HOSTS = [h.strip() for h in os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h.strip()]
+
+# Set CSRF_TRUSTED_ORIGINS explicitly if you front this with a reverse proxy on https,
+# e.g. CSRF_TRUSTED_ORIGINS=https://youtubarr.example.com
+CSRF_TRUSTED_ORIGINS = [o.strip() for o in os.getenv("CSRF_TRUSTED_ORIGINS", "").split(",") if o.strip()]
+if not CSRF_TRUSTED_ORIGINS:
+    for h in ALLOWED_HOSTS:
+        if h == "*":
+            # "*" cannot be expressed as an origin. Same-origin POSTs are still accepted
+            # by Django; set CSRF_TRUSTED_ORIGINS explicitly if you use a proxy.
+            continue
+        if h.startswith(("http://", "https://")):
+            CSRF_TRUSTED_ORIGINS.append(h)
+        else:
+            # cover http/https, with and without :8000 (for dev)
+            CSRF_TRUSTED_ORIGINS.append(f"http://{h}")
+            CSRF_TRUSTED_ORIGINS.append(f"http://{h}:8000")
+            CSRF_TRUSTED_ORIGINS.append(f"https://{h}")
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 # Application definition
 
 INSTALLED_APPS = [
@@ -67,6 +75,10 @@ MIDDLEWARE = [
 ]
 
 ROOT_URLCONF = 'core.urls'
+
+# Bootstrap calls its red alert 'danger', Django calls the level 'error'.
+from django.contrib.messages import constants as message_constants  # noqa: E402
+MESSAGE_TAGS = {message_constants.ERROR: "danger"}
 
 TEMPLATES = [
     {
@@ -93,7 +105,7 @@ WSGI_APPLICATION = 'core.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        "NAME": "/data/db.sqlite3",
+        "NAME": os.path.join(DATA_DIR, "db.sqlite3"),
     }
 }
 
@@ -139,7 +151,10 @@ STATIC_URL = 'static/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 STATIC_ROOT = BASE_DIR / "staticfiles"
-STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
+}
 
 # External config
 LIDARR_TOKEN = env("LIDARR_TOKEN", default=None)

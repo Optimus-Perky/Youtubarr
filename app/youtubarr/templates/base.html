@@ -40,7 +40,7 @@
     {% if messages %}
       <div class="mb-3">
         {% for m in messages %}
-          <div class="alert alert-success py-2 mb-2">{{ m }}</div>
+          <div class="alert alert-{{ m.tags|default:'info' }} py-2 mb-2">{{ m }}</div>
         {% endfor %}
       </div>
     {% endif %}

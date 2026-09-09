@@ -1,0 +1,31 @@
+# Line-ending policy.
+#
+# This repo is often cloned on Windows and then built into a Linux container.
+# Without this file, git converts LF to CRLF on checkout, which breaks any file
+# the container executes or parses:
+#   - entrypoint.sh gets "#!/bin/sh\r", and the kernel fails with the very
+#     misleading "exec /entrypoint.sh: no such file or directory"
+#   - supervisord.conf / nginx.conf pick up stray \r inside directive values
+#
+# Forcing LF for these files makes a Windows clone build correctly on Linux.
+
+* text=auto eol=lf
+
+*.sh      text eol=lf
+*.conf    text eol=lf
+*.py      text eol=lf
+*.html    text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.txt     text eol=lf
+Dockerfile text eol=lf
+.env.example text eol=lf
+
+# Never touch binaries
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.sqlite3 binary

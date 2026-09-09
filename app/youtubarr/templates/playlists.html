@@ -1,6 +1,39 @@
 {% extends "base.html" %}
 {% block content %}
-<h1 class="display-6 fw-semibold mb-4">Playlists</h1>
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h1 class="display-6 fw-semibold m-0">Playlists</h1>
+  <div class="d-flex gap-2">
+    <form method="post" action="{% url 'add-liked-music' %}" class="m-0">{% csrf_token %}
+      <button type="submit" class="btn btn-outline-secondary">Add Liked Music</button>
+    </form>
+    <form method="post" action="{% url 'sync-playlists' %}" class="m-0"
+          hx-post="{% url 'sync-playlists' %}"
+          hx-target="#sync-status"
+          hx-swap="innerHTML"
+          hx-disabled-elt="find button">{% csrf_token %}
+      <button type="submit" class="btn btn-primary">Sync now</button>
+    </form>
+  </div>
+</div>
+
+{% if not oauth.file_exists %}
+  <div class="alert alert-warning small">
+    <strong>OAuth is not set up.</strong> Public and unlisted playlists will sync with just an API key,
+    but private playlists and Liked Music need <code>oauth.json</code> at <code>{{ oauth.path }}</code>.
+    Run <code>ytmusicapi oauth</code> and place the file in the directory you mount there.
+  </div>
+{% elif not oauth.client_id_set or not oauth.client_secret_set %}
+  <div class="alert alert-warning small">
+    <strong>OAuth is incomplete.</strong> <code>oauth.json</code> exists, but
+    <code>YOUTUBE_OAUTH_CLIENT_ID</code> / <code>YOUTUBE_OAUTH_CLIENT_SECRET</code> are not both set in
+    <code>.env</code>. Without them the access token cannot be refreshed and private playlists will stop
+    syncing after about an hour.
+  </div>
+{% endif %}
+
+<!-- Sync feedback lands here -->
+<div id="sync-status" class="mb-3"></div>
 
 <form method="post" class="row g-3 mb-4">{% csrf_token %}
   <div class="col-auto">
@@ -12,32 +45,6 @@
   </div>
 </form>
 
-<div class="card">
-  <div class="table-responsive">
-    <table class="table table-hover align-middle mb-0">
-      <thead class="table-light">
-        <tr>
-          <th>Enabled</th>
-          <th>Playlist ID</th>
-          <th>Title</th>
-          <th>Channel</th>
-          <th>Last synced</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for p in playlists %}
-        <tr>
-          <td>{{ p.enabled }}</td>
-          <td class="text-monospace small">{{ p.playlist_id }}</td>
-          <td>{{ p.title }}</td>
-          <td>{{ p.channel_title }}</td>
-          <td class="text-nowrap">{{ p.last_synced|default:"-" }}</td>
-        </tr>
-        {% empty %}
-        <tr><td colspan="5" class="text-muted">No playlists yet.</td></tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</div>
+{% include "partials/playlist_table.html" %}
+
 {% endblock %}

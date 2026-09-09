@@ -1,4 +1,5 @@
 import json
+import pytest
 import responses
 from django.conf import settings
 from freezegun import freeze_time
@@ -34,6 +35,7 @@ YT_META = {
 MB_RESP_FOO = {"artists": [{"id": "11111111-1111-1111-1111-111111111111"}]}
 MB_RESP_BAZ = {"artists": [{"id": "22222222-2222-2222-2222-222222222222"}]}
 
+@pytest.mark.django_db
 @freeze_time("2025-01-01")
 @responses.activate
 def test_full_refresh_and_snapshot(settings):

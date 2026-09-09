@@ -1,0 +1,50 @@
+{% if state == "SUCCESS" %}
+  {% with r=result %}
+  <div class="alert {% if r.errors %}alert-warning{% else %}alert-success{% endif %}">
+    <div class="fw-semibold mb-2">
+      {% if r.errors %}Sync finished with problems{% else %}Sync complete{% endif %}
+    </div>
+    <div class="small mb-2">
+      {{ r.items }} track{{ r.items|pluralize }} seen ·
+      {{ r.artists_resolved }} new artist{{ r.artists_resolved|pluralize }} matched on MusicBrainz ·
+      {{ r.snapshot_artists }} artist{{ r.snapshot_artists|pluralize }} now published to Lidarr
+    </div>
+    {% if r.playlists %}
+      <ul class="small mb-0 ps-3">
+        {% for p in r.playlists %}
+          <li>
+            {% if p.ok %}
+              <span class="text-success">✓</span> {{ p.playlist }} — {{ p.items }} item{{ p.items|pluralize }}
+            {% else %}
+              <span class="text-danger">✗</span> <strong>{{ p.playlist }}</strong> — {{ p.error }}
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </div>
+  {% endwith %}
+  <!-- refresh the table now that data has changed -->
+  <div hx-get="{% url 'playlist-table' %}"
+       hx-trigger="load"
+       hx-target="#playlist-table"
+       hx-swap="outerHTML"></div>
+
+{% elif state == "FAILURE" %}
+  <div class="alert alert-danger">
+    <div class="fw-semibold mb-1">Sync failed</div>
+    <div class="small font-monospace">{{ error }}</div>
+  </div>
+
+{% else %}
+  <div class="alert alert-info d-flex align-items-center">
+    <div class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></div>
+    <div class="small">{{ message|default:"Working…" }}</div>
+  </div>
+  {% if task_id %}
+    <div hx-get="{% url 'sync-status' task_id %}"
+         hx-trigger="load delay:2s"
+         hx-target="#sync-status"
+         hx-swap="innerHTML"></div>
+  {% endif %}
+{% endif %}

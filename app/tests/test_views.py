@@ -1,7 +1,10 @@
 import json
+
+import pytest
 from django.conf import settings
 from youtubarr.models import Snapshot
 
+@pytest.mark.django_db
 def test_lidarr_requires_token(client, settings):
     settings.LIDARR_TOKEN = "secret"
     Snapshot.objects.create(payload=[])
