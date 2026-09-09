@@ -446,6 +446,8 @@ def _set_artist_by_mbid(it: TrackItem, mbid: str) -> None:
             artist.resolved_from = "manually set"
             artist.save(update_fields=["mbid", "resolved_from"])
     it.artist = artist
+    # Keep the displayed guess in sync with what actually got linked.
+    it.artist_name_guess = artist.name
     it.resolution_note = "manually set"
     it.resolution_attempted_at = timezone.now()
 
@@ -487,7 +489,7 @@ def edit_item(request, item_id):
                 mbid_error = "That doesn't look like a MusicBrainz artist ID (paste the ID or its musicbrainz.org artist page URL)."
             else:
                 _set_artist_by_mbid(it, match.group(0).lower())
-                changed += ["artist", "resolution_note", "resolution_attempted_at"]
+                changed += ["artist", "artist_name_guess", "resolution_note", "resolution_attempted_at"]
 
     if changed:
         # Remember this was corrected by hand so a later sync does not

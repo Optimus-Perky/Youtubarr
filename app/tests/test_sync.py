@@ -13,6 +13,7 @@ YT_PL = "https://www.googleapis.com/youtube/v3/playlists"
 YT_ITEMS = "https://www.googleapis.com/youtube/v3/playlistItems"
 YT_VIDEOS = "https://www.googleapis.com/youtube/v3/videos"
 MB = "https://musicbrainz.org/ws/2/artist/"
+MB_RECORDING = "https://musicbrainz.org/ws/2/recording/"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 
@@ -408,6 +409,9 @@ def test_manually_entering_an_mbid_resolves_the_track(client):
     ti.refresh_from_db()
     assert ti.artist.mbid == mbid
     assert ti.artist.name == "Robert Miles"
+    # Regression: the artist got linked but the displayed "Artist guess" box
+    # kept whatever (blank, or wrong) text was there before.
+    assert ti.artist_name_guess == "Robert Miles"
     assert ti.resolution_note == "manually set"
     assert ti.manually_edited is True
 
@@ -612,15 +616,26 @@ def test_matching_a_selection_rechecks_an_already_resolved_row(client, monkeypat
     wrong = Artist.objects.create(name="Jesus Jones", mbid="f9776598-2689-41db-98d3-829f5510021c")
     ti = TrackItem.objects.create(
         playlist=pl, video_id="v1", title="Right Here, Right Now",
-        artist_name_guess="Fatboy Slim", artist=wrong, resolution_note="manually set",
+        artist_name_guess="", artist=wrong, resolution_note="manually set",
     )
-    responses.add(responses.GET, MB,
-                   json={"artists": [{"id": "34c63966-445c-4613-afe1-4f0e1e53ae9a", "name": "Fatboy Slim"}]})
+    # No artist_name_guess, so this goes through route 2 (recording-title
+    # consensus) - the name comes back from MusicBrainz itself, independent
+    # of anything already on the track, which is what actually exercises
+    # the sync fix (route 1 would just echo back whatever guess it searched
+    # for, which isn't a meaningful test of "did the name get corrected").
+    fatboy_credit = {"artist-credit": [{"artist": {"id": "34c63966-445c-4613-afe1-4f0e1e53ae9a", "name": "Fatboy Slim"}}]}
+    responses.add(responses.GET, MB_RECORDING, json={"recordings": [
+        {"title": "Right Here, Right Now", **fatboy_credit},
+        {"title": "Right Here, Right Now", **fatboy_credit},
+    ]})
 
     client.post(reverse("match-selected"), {"item_id": [ti.id]})
 
     ti.refresh_from_db()
     assert ti.artist.name == "Fatboy Slim"
+    # Regression: the MBID box updated but the "Artist guess" box kept
+    # showing the old wrong name since nothing synced it to the new match.
+    assert ti.artist_name_guess == "Fatboy Slim"
 
 
 @pytest.mark.django_db

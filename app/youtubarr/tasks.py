@@ -405,9 +405,13 @@ def _link_artist(ti: TrackItem, name: str, mbid: str, note: str) -> None:
         artist.resolved_from = note
         artist.save(update_fields=["mbid", "resolved_from"])
     ti.artist = artist
+    # Keep the displayed guess in sync with what actually got linked - a
+    # confirmed match is strictly more trustworthy than whatever text
+    # (possibly blank, possibly wrong) was sitting there before.
+    ti.artist_name_guess = name
     ti.resolution_note = note
     ti.resolution_attempted_at = timezone.now()
-    ti.save(update_fields=["artist", "resolution_note", "resolution_attempted_at"])
+    ti.save(update_fields=["artist", "artist_name_guess", "resolution_note", "resolution_attempted_at"])
 
 
 def _resolve_items(items: list[TrackItem], progress=None) -> dict:
